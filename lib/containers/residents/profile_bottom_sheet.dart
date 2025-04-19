@@ -1,7 +1,7 @@
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:flutter/material.dart';
 import 'package:modal_bottom_sheet/modal_bottom_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:emcall/auth/forms/login_form.dart';
 
 /// A widget representing the profile content in a bottom sheet.
 /// This replaces the old [ProfilePage] route.
@@ -33,7 +33,7 @@ class ProfileBottomSheet extends StatelessWidget {
     Navigator.pushReplacement(
       // ignore: use_build_context_synchronously
       context,
-      MaterialPageRoute(builder: (context) => const LoginForm()),
+      MaterialPageRoute(builder: (context) => const WelcomePage()),
     );
   }
 

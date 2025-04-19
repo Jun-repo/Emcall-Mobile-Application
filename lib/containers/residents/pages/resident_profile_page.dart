@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:emcall/auth/forms/login_form.dart';
+
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -86,6 +87,8 @@ class ResidentProfilePageState extends State<ResidentProfilePage> {
   void _logout(BuildContext context) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear(); // Clear all session data
+
+    await prefs.remove('resident_id');
     if (mounted) {
       ScaffoldMessenger.of(this.context).showSnackBar(
         const SnackBar(content: Text('Logging out...')),
@@ -93,7 +96,7 @@ class ResidentProfilePageState extends State<ResidentProfilePage> {
       Navigator.pushReplacement(
         this.context,
         MaterialPageRoute(
-          builder: (context) => const LoginForm(),
+          builder: (context) => const WelcomePage(),
         ),
       );
     }

@@ -21,6 +21,8 @@ class CreateWorkerAccountFormState extends State<CreateWorkerAccountForm> {
   final TextEditingController productKeyController = TextEditingController();
   final TextEditingController firstNameController = TextEditingController();
   final TextEditingController lastNameController = TextEditingController();
+  final TextEditingController emailController =
+      TextEditingController(); // Added email controller
   final TextEditingController usernameController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   bool _isLoading = false;
@@ -54,16 +56,15 @@ class CreateWorkerAccountFormState extends State<CreateWorkerAccountForm> {
         'organization_id': organizationId,
         'first_name': firstNameController.text.trim(),
         'last_name': lastNameController.text.trim(),
+        'personal_email':
+            emailController.text.trim(), // Added email to worker data
         'username': usernameController.text.trim(),
         'password_hash':
             BCrypt.hashpw(passwordController.text.trim(), BCrypt.gensalt()),
       };
 
-      final workerResponse = await supabase
-          .from('workers')
-          .insert(workerData)
-          .select()
-          .single(); // Retrieve the inserted worker data
+      final workerResponse =
+          await supabase.from('workers').insert(workerData).select().single();
 
       // Mark product key as used
       await supabase.from('product_keys').update({
@@ -74,6 +75,8 @@ class CreateWorkerAccountFormState extends State<CreateWorkerAccountForm> {
       // Store worker details in SharedPreferences
       await prefs.setBool("loggedIn", true);
       await prefs.setString("userType", "worker");
+      await prefs.setString(
+          "worker_email", emailController.text.trim()); // Added worker_email
       await prefs.setString("username", usernameController.text.trim());
       await prefs.setString("worker_id", workerResponse['id'].toString());
       await prefs.setString("firstName", firstNameController.text.trim());
@@ -127,6 +130,18 @@ class CreateWorkerAccountFormState extends State<CreateWorkerAccountForm> {
                 validator: (value) => value!.isEmpty ? 'Required' : null,
               ),
               TextFormField(
+                controller: emailController,
+                decoration: const InputDecoration(labelText: 'Email *'),
+                keyboardType: TextInputType.emailAddress,
+                validator: (value) {
+                  if (value!.isEmpty) return 'Required';
+                  if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
+                    return 'Enter a valid email';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
                 controller: usernameController,
                 decoration: const InputDecoration(labelText: 'Username *'),
                 validator: (value) => value!.isEmpty ? 'Required' : null,
@@ -156,6 +171,7 @@ class CreateWorkerAccountFormState extends State<CreateWorkerAccountForm> {
     productKeyController.dispose();
     firstNameController.dispose();
     lastNameController.dispose();
+    emailController.dispose(); // Dispose email controller
     usernameController.dispose();
     passwordController.dispose();
     super.dispose();

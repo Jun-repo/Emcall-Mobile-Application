@@ -1,5 +1,5 @@
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:emcall/components/color.dart';
-import 'package:emcall/auth/forms/login_form.dart';
 
 import 'package:emcall/components/onboarding/onboarding_items.dart';
 import 'package:flutter/material.dart';
@@ -109,7 +109,7 @@ class _OnboardingViewState extends State<OnboardingView> {
             // same key
             if (!mounted) return;
             Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (context) => const LoginForm()));
+                MaterialPageRoute(builder: (context) => const WelcomePage()));
           },
           child: const Text(
             "Get started",

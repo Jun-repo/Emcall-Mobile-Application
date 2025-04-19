@@ -2,7 +2,7 @@
 
 import 'dart:io';
 import 'package:emcall/containers/residents/pages/face_verification_page.dart';
-import 'package:emcall/containers/residents/pages/resident_home_page.dart';
+import 'package:emcall/containers/residents/pages/home_navigation_page.dart';
 import 'package:emcall/containers/residents/pages/verified_successfully_page.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -147,15 +147,14 @@ class _VerificationFormState extends State<VerificationForm> {
         ),
       );
 
-      // After closing the verified page, navigate to the Resident Home Page.
+      // After closing the verified page, navigate to the Home Navigation Page.
+
+      Navigator.pop(context);
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) => ResidentHomePage(
-            firstName: widget.firstName,
-            middleName: widget.middleName,
-            lastName: widget.lastName,
-            suffix: widget.suffix,
+          builder: (context) => const HomeNavigationPage(
+            initialIndex: 1,
           ),
         ),
       );

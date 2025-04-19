@@ -60,23 +60,44 @@ dependencies:
   mailer: ^6.4.1
   cached_network_image: ^3.4.1
   animated_notch_bottom_bar: ^1.0.3
+  uuid: ^4.5.1
+  video_compress: ^3.1.4
+  video_player: ^2.9.5
+  app_settings: ^6.1.1
+  cached_video_player_plus: ^3.0.3
+  provider: ^6.1.4
+  share_plus: ^10.1.4
+  font_awesome_flutter: ^10.8.0
+
+  # flutter_callkit_incoming: ^2.5.2
+  # stream_video: ^0.6.0
+  # stream_video_flutter: ^0.6.0
+  # stream_video_push_notification: ^0.6.0
 
  
 
-  
 
 dependency_overrides:
   geolocator_android: 4.6.1
+  # webrtc_interface: 1.2.0  # Force compatible version
+  # flutter_webrtc: 0.11.7
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: ^0.14.3
+  flutter_lints: ^4.0.0
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icon/icon.png"
+  min_sdk_android: 21 # android min sdk min:16, default 21
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^4.0.0
+
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

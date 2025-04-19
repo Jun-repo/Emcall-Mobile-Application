@@ -110,7 +110,7 @@ class CreateOrganizationAccountFormState
 
       // Step 2: Prepare organization data and insert into the appropriate table
       final orgData = {
-        'public_org_name': orgNameController.text.trim(),
+        'public_org_name': orgNameController.text.trim().toLowerCase(),
         'address': addressController.text.trim(),
         'hotline_phone_number': hotlineController.text.trim(),
         'gmail_org_account': emailController.text.trim(),

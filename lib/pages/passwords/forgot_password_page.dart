@@ -1,6 +1,6 @@
 // forgot_password_page.dart
 import 'package:email_otp/email_otp.dart';
-import 'package:emcall/pages/auth/otp_verification_page.dart';
+import 'package:emcall/pages/auth/confirmation_page.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -13,6 +13,7 @@ class ForgotPasswordPage extends StatefulWidget {
 
 class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   final TextEditingController _emailController = TextEditingController();
+  static const Duration _snackBarDisplayDuration = Duration(seconds: 3);
   final EmailOTP _emailOTP = EmailOTP();
   bool _isLoading = false;
 
@@ -94,7 +95,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         emailPort: EmailPort.port465,
         secureType: SecureType.ssl,
         username: 'emcallcompany@gmail.com',
-        password: 'ulqpxshshecjrria',
+        password: 'hqrlyllujvhiiqqv',
       );
       EmailOTP.setTemplate(
         template: '''
@@ -165,11 +166,11 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
           'status': 'active'
         });
 
+        // Navigate to ConfirmationPage
         Navigator.push(
-          // ignore: use_build_context_synchronously
           context,
           MaterialPageRoute(
-            builder: (context) => OTPVerificationPage(
+            builder: (context) => ConfirmationPage(
               email: userEmail!,
               userType: userType!,
               userId: userId!,
@@ -181,9 +182,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _showError('Failed to send OTP');
       }
     } catch (e, stackTrace) {
-      debugPrint("Error sending OTP: $e");
+      _showNoNetworkSnackBar();
       debugPrint(stackTrace.toString());
-      _showError('Error: ${e.toString()}');
+      _showNoNetworkSnackBar();
     } finally {
       setState(() => _isLoading = false);
     }
@@ -195,74 +196,154 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 
+  void _showNoNetworkSnackBar({
+    Duration duration = _snackBarDisplayDuration,
+    Animation<double>? animation,
+  }) {
+    final snack = SnackBar(
+      content: const Text(
+          'No Internet Connection, \nBro! checked your network data/wifi before login...'),
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.only(top: 16, left: 16, right: 16, bottom: 20),
+      backgroundColor: Colors.redAccent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(4.0),
+      ),
+      duration: duration,
+      animation: animation,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(snack);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(100),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: AppBar(
-            backgroundColor: Colors.white,
-            elevation: 0,
-            leading: CircleAvatar(
-              radius: 30,
-              backgroundColor: const Color.fromARGB(255, 232, 232, 232),
-              child: Center(
-                child: IconButton(
-                  icon: const Icon(
+      backgroundColor: Colors.white,
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(height: 120),
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Image.asset(
+                      "assets/images/mail_delivery.png",
+                      height: 350,
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  TextField(
+                    controller: _emailController,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.mail),
+                      suffixIcon: IconButton(
+                        onPressed: _isLoading ? null : _sendOTP,
+                        icon: _isLoading
+                            ? const CircularProgressIndicator(
+                                color: Colors.redAccent,
+                              )
+                            : const Icon(Icons.send_rounded,
+                                color: Colors.grey),
+                      ),
+                      labelText: 'Email Address',
+                      hintText: 'Enter your Email',
+                      filled: true,
+                      fillColor: Colors.grey[100],
+                      labelStyle: TextStyle(
+                        color: Colors.black54,
+                        fontSize: 20,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: const BorderRadius.all(
+                          Radius.circular(8.0),
+                        ),
+                        borderSide: const BorderSide(
+                          color: Colors.redAccent,
+                          width: 1.0,
+                        ),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: const BorderRadius.all(
+                          Radius.circular(8.0),
+                        ),
+                        borderSide: const BorderSide(
+                          color: Color.fromARGB(255, 202, 202, 202),
+                          width: 0.7,
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: const BorderRadius.all(
+                          Radius.circular(8.0),
+                        ),
+                        borderSide: const BorderSide(
+                          color: Colors.redAccent,
+                          width: 1.0,
+                        ),
+                      ),
+                    ),
+                    cursorColor: Colors.redAccent,
+                    keyboardType: TextInputType.emailAddress,
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _sendOTP,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(vertical: 16.0),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8.0),
+                        ),
+                      ),
+                      child: _isLoading
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text(
+                              'Continue',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.white,
+                              ),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: SizedBox(
+                height: 48,
+                width: 48,
+                child: FloatingActionButton(
+                  onPressed: () => Navigator.pop(context),
+                  elevation: 4,
+                  backgroundColor: Colors.white,
+                  shape: const CircleBorder(),
+                  child: const Icon(
                     Icons.arrow_back,
                     color: Colors.redAccent,
-                    size: 28,
+                    size: 24,
                   ),
-                  onPressed: () {
-                    Navigator.pop(context);
-                  },
                 ),
               ),
             ),
           ),
-        ),
-      ),
-      backgroundColor: Colors.white,
-      body: Padding(
-        padding: const EdgeInsets.all(15),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Image.network(
-                "https://img.freepik.com/free-vector/emails-concept-illustration_114360-1355.jpg",
-                height: 350,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextField(
-                  controller: _emailController,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.mail),
-                    suffixIcon: IconButton(
-                      onPressed: _isLoading ? null : _sendOTP,
-                      icon: _isLoading
-                          ? const CircularProgressIndicator()
-                          : const Icon(Icons.send_rounded, color: Colors.teal),
-                    ),
-                    hintText: "Email Address",
-                    border: const OutlineInputBorder(
-                      borderRadius: BorderRadius.all(Radius.circular(15.0)),
-                    ),
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-              ),
-            ),
-          ],
-        ),
+        ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
   }
 }

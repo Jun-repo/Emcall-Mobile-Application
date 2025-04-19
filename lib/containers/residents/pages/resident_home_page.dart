@@ -5,19 +5,17 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:emcall/containers/residents/pages/home_navigation_page.dart';
 import 'package:emcall/containers/residents/pages/resident_emergency_map_page.dart';
 import 'package:emcall/containers/residents/pages/resident_profile_page.dart';
-import 'package:emcall/containers/residents/resident_map.dart';
 import 'package:emcall/pages/services/service_info.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
-
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class ResidentHomePage extends StatefulWidget {
   final String firstName;
@@ -25,6 +23,7 @@ class ResidentHomePage extends StatefulWidget {
   final String lastName;
   final String suffix;
   final String? address;
+
   const ResidentHomePage({
     super.key,
     required this.firstName,
@@ -47,6 +46,11 @@ class ResidentHomePageState extends State<ResidentHomePage>
 
   // For storing the location record ID from the locations table.
   int? userLocationId;
+  StreamSubscription<List<Map<String, dynamic>>>? _locationSubscription;
+  StreamSubscription<Position>? _positionStreamSubscription;
+
+  bool _isSubscriptionSetUp = false;
+  final int selectedIndex = 0;
 
   // Profile info
   String fullName = '';
@@ -57,43 +61,19 @@ class ResidentHomePageState extends State<ResidentHomePage>
   // Animation controllers and animations.
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
-  late AnimationController _pulseController2; // Second pulse controller
-  late Animation<double> _pulseAnimation2; // Second pulse animation
+  late AnimationController _pulseController2;
+  late Animation<double> _pulseAnimation2;
   late AnimationController _waveController;
   late Animation<double> _waveAnimation;
-  late AnimationController _waveController2; // Second wave controller
-  late Animation<double> _waveAnimation2; // Second wave animation
-  late AnimationController _waveController3; // Third wave controller
-  late Animation<double> _waveAnimation3; // Third wave animation
+  late AnimationController _waveController2;
+  late Animation<double> _waveAnimation2;
+  late AnimationController _waveController3;
+  late Animation<double> _waveAnimation3;
 
   // For the bouncing dialog animation
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
   bool _isLocationPermissionGranted = false;
-  // Subscription for realtime location updates.
-  StreamSubscription<Position>? _positionStreamSubscription;
-
-  // To track the selected tab in the bottom navigation bar
-  int _selectedIndex = 0;
-  Widget _buildNavIcon(
-      IconData selectedIcon, IconData unselectedIcon, int index) {
-    bool isSelected = _selectedIndex == index;
-    return isSelected
-        ? Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14.0, vertical: 4.0),
-            decoration: const BoxDecoration(
-              borderRadius: BorderRadius.all(Radius.elliptical(30.0, 30.0)),
-              color: Color.fromARGB(179, 255, 139, 131),
-            ),
-            child: Icon(
-              selectedIcon,
-            ),
-          )
-        : Icon(
-            unselectedIcon,
-          );
-  }
 
   @override
   void initState() {
@@ -105,6 +85,13 @@ class ResidentHomePageState extends State<ResidentHomePage>
     _subscribeToLocationUpdates();
     _checkAndRequestLocationPermission();
 
+    Future.wait([_loadProfileData(), _initUserLocation()]).then((_) {
+      if (userLocationId != null && !_isSubscriptionSetUp) {
+        _setupLocationSubscription();
+        _isSubscriptionSetUp = true;
+      }
+    });
+    _subscribeToLocationUpdates();
     // First pulse animation for the SOS button.
     _pulseController = AnimationController(
       vsync: this,
@@ -117,7 +104,7 @@ class ResidentHomePageState extends State<ResidentHomePage>
     // Second pulse animation (slightly larger).
     _pulseController2 = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2), // Same duration as the first
+      duration: const Duration(seconds: 2),
     );
     _pulseAnimation2 = Tween<double>(begin: 1.0, end: 1.3).animate(
       CurvedAnimation(parent: _pulseController2, curve: Curves.easeInOut),
@@ -164,23 +151,14 @@ class ResidentHomePageState extends State<ResidentHomePage>
   }
 
   void _startAnimations() {
-    // Start the first pulse immediately
     _pulseController.repeat(reverse: true);
-
-    // Start the second pulse after 100ms
     Future.delayed(const Duration(milliseconds: 100), () {
       _pulseController2.repeat(reverse: true);
     });
-
-    // Start the first wave immediately
     _waveController.repeat();
-
-    // Start the second wave after 100ms
     Future.delayed(const Duration(milliseconds: 100), () {
       _waveController2.repeat();
     });
-
-    // Start the third wave after 200ms (100ms after the second)
     Future.delayed(const Duration(milliseconds: 200), () {
       _waveController3.repeat();
     });
@@ -188,33 +166,67 @@ class ResidentHomePageState extends State<ResidentHomePage>
 
   @override
   void dispose() {
+// Stop and dispose all animation controllers
+    _pulseController.stop();
     _pulseController.dispose();
-    _pulseController2.dispose(); // Dispose of the second pulse controller
+    _pulseController2.stop();
+    _pulseController2.dispose();
+    _waveController.stop();
     _waveController.dispose();
-    _waveController2.dispose(); // Dispose of the second wave controller
-    _waveController3.dispose(); // Dispose of the third wave controller
-    _bounceController.dispose(); // Dispose of the bounce controller
+    _waveController2.stop();
+    _waveController2.dispose();
+    _waveController3.stop();
+    _waveController3.dispose();
+    _bounceController.stop();
+    _bounceController.dispose();
+    _locationSubscription?.cancel(); // Cancel the Supabase subscription
+    _positionStreamSubscription?.cancel(); // Cancel the position stream
+    // Cancel the location stream subscription
     _positionStreamSubscription?.cancel();
     super.dispose();
   }
 
-  // Check if the user is new by looking at SharedPreferences
+// Method to set up the real-time subscription to the locations table
+  void _setupLocationSubscription() {
+    _locationSubscription = Supabase.instance.client
+        .from('locations')
+        .stream(primaryKey: ['id'])
+        .eq('id', userLocationId!)
+        .listen((List<Map<String, dynamic>> data) {
+          if (data.isNotEmpty && mounted) {
+            final location = data.first;
+            setState(() {
+              currentPosition = Position(
+                latitude: location['latitude'],
+                longitude: location['longitude'],
+                timestamp:
+                    DateTime.now(), // Placeholder, adjust if timestamp is in DB
+                accuracy: 0.0, // Placeholder, adjust as needed
+                altitude: 0.0,
+                altitudeAccuracy: 0.0, // Placeholder, adjust as needed
+                heading: 0.0,
+                headingAccuracy: 0.0, // Placeholder, adjust as needed
+                speed: 0.0,
+                speedAccuracy: 0.0,
+              );
+              _currentAddress = location['address'];
+            });
+          }
+        });
+  }
+
   Future<void> _checkIfNewUser() async {
     final prefs = await SharedPreferences.getInstance();
     bool? isNew = prefs.getBool('isNewUser');
-    if (isNew == null || isNew) {
+    if (mounted) {
+      // Check if widget is still mounted
       setState(() {
-        isNewUser = true;
-      });
-      await prefs.setBool('isNewUser', false);
-    } else {
-      setState(() {
-        isNewUser = false;
+        isNewUser = isNew == null || isNew;
       });
     }
+    await prefs.setBool('isNewUser', false);
   }
 
-  // Check and request location permission, show dialog if not granted
   Future<void> _checkAndRequestLocationPermission() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -229,14 +241,11 @@ class ResidentHomePageState extends State<ResidentHomePage>
       return;
     }
 
-    setState(() {
-      _isLocationPermissionGranted = true;
-    });
+    setState(() => _isLocationPermissionGranted = true);
     _initUserLocation();
     _subscribeToLocationUpdates();
   }
 
-  // Show a persistent dialog with bouncing animation
   void _showLocationPermissionDialog() {
     showDialog(
       context: context,
@@ -304,9 +313,8 @@ class ResidentHomePageState extends State<ResidentHomePage>
 
                             if (permission == LocationPermission.whileInUse ||
                                 permission == LocationPermission.always) {
-                              setState(() {
-                                _isLocationPermissionGranted = true;
-                              });
+                              setState(
+                                  () => _isLocationPermissionGranted = true);
                               Navigator.of(dialogContext).pop();
                               _initUserLocation();
                               _subscribeToLocationUpdates();
@@ -350,8 +358,10 @@ class ResidentHomePageState extends State<ResidentHomePage>
       if (kDebugMode) {
         print("Error: No 'personal_email' found in SharedPreferences.");
       }
-      setState(() => fullName =
-          '${widget.firstName} ${widget.middleName}. ${widget.lastName} ${widget.suffix}');
+      if (mounted) {
+        setState(() => fullName =
+            '${widget.firstName} ${widget.middleName}. ${widget.lastName} ${widget.suffix}');
+      }
       return;
     }
 
@@ -365,11 +375,11 @@ class ResidentHomePageState extends State<ResidentHomePage>
           .maybeSingle();
 
       if (response == null) {
-        if (kDebugMode) {
-          print("No resident found with email: $email");
+        if (kDebugMode) print("No resident found with email: $email");
+        if (mounted) {
+          setState(() => fullName =
+              '${widget.firstName} ${widget.middleName[0]}. ${widget.lastName} ${widget.suffix}');
         }
-        setState(() => fullName =
-            '${widget.firstName} ${widget.middleName[0]}. ${widget.lastName} ${widget.suffix}');
         return;
       }
 
@@ -387,60 +397,24 @@ class ResidentHomePageState extends State<ResidentHomePage>
       computedName += ' $lastName';
       if (suffix.isNotEmpty) computedName += ' $suffix';
 
-      setState(() {
-        fullName = computedName.trim();
-        userAddress = response['address'];
-        final rawImageUrl = response['profile_image']?.toString() ?? '';
-        profileImageUrl = rawImageUrl.isNotEmpty
-            ? rawImageUrl.startsWith('http')
-                ? rawImageUrl
-                : 'https://$rawImageUrl'
-            : null;
-      });
+      if (mounted) {
+        // Check if widget is still mounted
+        setState(() {
+          fullName = computedName.trim();
+          userAddress = response['address'];
+          final rawImageUrl = response['profile_image']?.toString() ?? '';
+          profileImageUrl = rawImageUrl.isNotEmpty
+              ? rawImageUrl.startsWith('http')
+                  ? rawImageUrl
+                  : 'https://$rawImageUrl'
+              : null;
+        });
+      }
     } catch (e) {
-      if (kDebugMode) {
-        print("Error loading profile data: $e");
-      }
-      setState(() => fullName =
-          '${widget.firstName} ${widget.middleName[0]}. ${widget.lastName} ${widget.suffix}');
-    }
-  }
-
-  Future<void> _recordServiceCall(ServiceInfo service) async {
-    final supabase = Supabase.instance.client;
-    final prefs = await SharedPreferences.getInstance();
-    int? residentId = prefs.getInt('resident_id');
-    if (residentId == null) {
-      if (kDebugMode) {
-        print("Resident ID not found!");
-      }
-      return;
-    }
-
-    if (service.id == null) {
-      if (kDebugMode) {
-        print("Service id is null");
-      }
-    } else {
-      if (kDebugMode) {
-        print("Recording service call for service id: ${service.id}");
-      }
-    }
-
-    final response = await supabase.from('service_calls').insert({
-      'resident_id': residentId,
-      'service_type': service.serviceType.toLowerCase(),
-      'service_id': service.id,
-      'shared_location': true,
-    }).maybeSingle();
-
-    if (response == null) {
-      if (kDebugMode) {
-        print('Insert error: $response');
-      }
-    } else {
-      if (kDebugMode) {
-        print('Service call recorded successfully: $response');
+      if (kDebugMode) print("Error loading profile data: $e");
+      if (mounted) {
+        setState(() => fullName =
+            '${widget.firstName} ${widget.middleName[0]}. ${widget.lastName} ${widget.suffix}');
       }
     }
   }
@@ -462,23 +436,21 @@ class ResidentHomePageState extends State<ResidentHomePage>
     try {
       Position position = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 2,
-      ));
-      setState(() {
-        currentPosition = position;
-      });
+              accuracy: LocationAccuracy.best, distanceFilter: 2));
+      if (mounted) {
+        // Check if widget is still mounted
+        setState(() => currentPosition = position);
+      }
       final address =
           await _reverseGeocode(position.latitude, position.longitude);
-      setState(() {
-        _currentAddress = address;
-      });
+      if (mounted) {
+        // Check if widget is still mounted
+        setState(() => _currentAddress = address);
+      }
       await _saveOrUpdateLocation(
           position.latitude, position.longitude, address);
     } catch (e) {
-      if (kDebugMode) {
-        print("Error getting location: $e");
-      }
+      if (kDebugMode) print("Error getting location: $e");
     }
   }
 
@@ -487,25 +459,25 @@ class ResidentHomePageState extends State<ResidentHomePage>
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
-        timeLimit: null,
+        distanceFilter: 5, // Trigger updates only after 5 meters of movement
       ),
     ).listen((Position position) async {
       String address =
           await _reverseGeocode(position.latitude, position.longitude);
-      setState(() {
-        currentPosition = position;
-        _currentAddress = address;
-      });
-      if (DateTime.now().difference(lastUpdate).inMilliseconds >= 500) {
+      if (mounted) {
+        setState(() {
+          currentPosition = position;
+          _currentAddress = address;
+        });
+      }
+      // Update database only if 1 second has passed since the last update
+      if (DateTime.now().difference(lastUpdate).inSeconds >= 1) {
         await _saveOrUpdateLocation(
             position.latitude, position.longitude, address);
         lastUpdate = DateTime.now();
       }
     }, onError: (e) {
-      if (kDebugMode) {
-        print("Location stream error: $e");
-      }
+      if (kDebugMode) print("Location stream error: $e");
     });
   }
 
@@ -524,9 +496,7 @@ class ResidentHomePageState extends State<ResidentHomePage>
         }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print("Reverse geocode error: $e");
-      }
+      if (kDebugMode) print("Reverse geocode error: $e");
     }
     return 'Unknown location';
   }
@@ -538,6 +508,21 @@ class ResidentHomePageState extends State<ResidentHomePage>
     String? email = prefs.getString('personal_email');
 
     try {
+      // Retrieve the resident's ID using the email
+      final residentResponse = await supabase
+          .from('residents')
+          .select('id')
+          .eq('personal_email', email!)
+          .single();
+
+      final residentId = residentResponse['id'];
+
+      if (residentId == null) {
+        if (kDebugMode) print("Error: Resident ID not found for email: $email");
+        return;
+      }
+
+      // Update or insert the location
       if (userLocationId != null) {
         await supabase.from('locations').update({
           'latitude': lat,
@@ -554,98 +539,101 @@ class ResidentHomePageState extends State<ResidentHomePage>
             })
             .select()
             .single();
-        setState(() {
-          userLocationId = response['id'];
-        });
-        if (email != null) {
-          await supabase.from('residents').update(
-              {'location_id': userLocationId}).eq('personal_email', email);
-        }
+        setState(() => userLocationId = response['id']);
+      }
+
+      // Update the resident's location_id using the resident's ID
+      await supabase.from('residents').update({
+        'location_id': userLocationId,
+      }).eq('id', residentId);
+
+      // Set up subscription if not already done
+      if (!_isSubscriptionSetUp) {
+        _setupLocationSubscription();
+        _isSubscriptionSetUp = true;
       }
     } catch (e) {
-      if (kDebugMode) {
-        print("Error saving location: $e");
-      }
+      if (kDebugMode) print("Error saving location: $e");
     }
   }
 
   Future<void> _fetchServices() async {
     final supabase = Supabase.instance.client;
     try {
-      final policeResponse = await supabase
-          .from('police')
-          .select('public_org_name, hotline_phone_number');
+      // Fetch police services
+      final policeResponse = await supabase.from('police').select(
+          'id, public_org_name, address, hotline_phone_number, gmail_org_account, locations!inner(latitude, longitude)');
       for (var item in policeResponse) {
-        _services.add(
-          ServiceInfo(
-            'Police',
-            orgName: item['public_org_name'] ?? 'Police Department',
-            hotlineNumber: item['hotline_phone_number'] ?? '',
-          ),
-        );
+        _services.add(ServiceInfo(
+          serviceType: 'Police',
+          id: item['id'],
+          orgName: item['public_org_name'] ?? 'Police Department',
+          address: item['address'] ?? '',
+          hotlineNumber: item['hotline_phone_number'] ?? '',
+          email: item['gmail_org_account'] ?? '',
+          latitude: item['locations']['latitude'] as double,
+          longitude: item['locations']['longitude'] as double,
+        ));
       }
-      final rescueResponse = await supabase
-          .from('rescue')
-          .select('public_org_name, hotline_phone_number');
+
+      // Repeat for rescue, firefighter, disaster_responders with similar structure
+      final rescueResponse = await supabase.from('rescue').select(
+          'id, public_org_name, address, hotline_phone_number, gmail_org_account, locations!inner(latitude, longitude)');
       for (var item in rescueResponse) {
-        _services.add(
-          ServiceInfo(
-            'Rescue',
-            orgName: item['public_org_name'] ?? 'Rescue Team',
-            hotlineNumber: item['hotline_phone_number'] ?? '',
-          ),
-        );
+        _services.add(ServiceInfo(
+          serviceType: 'Rescue',
+          id: item['id'],
+          orgName: item['public_org_name'] ?? 'Rescue Team',
+          address: item['address'] ?? '',
+          hotlineNumber: item['hotline_phone_number'] ?? '',
+          email: item['gmail_org_account'] ?? '',
+          latitude: item['locations']['latitude'] as double,
+          longitude: item['locations']['longitude'] as double,
+        ));
       }
-      final firefighterResponse = await supabase
-          .from('firefighter')
-          .select('public_org_name, hotline_phone_number');
+      // Fetch firefighter services
+      final firefighterResponse = await supabase.from('firefighter').select(
+          'id, public_org_name, address, hotline_phone_number, gmail_org_account, locations!inner(latitude, longitude)');
       for (var item in firefighterResponse) {
-        _services.add(
-          ServiceInfo(
-            'Firefighter',
-            orgName: item['public_org_name'] ?? 'Fire Department',
-            hotlineNumber: item['hotline_phone_number'] ?? '',
-          ),
-        );
+        _services.add(ServiceInfo(
+          serviceType: 'Firefighter',
+          id: item['id'],
+          orgName: item['public_org_name'] ?? 'Firefighter Department',
+          address: item['address'] ?? '',
+          hotlineNumber: item['hotline_phone_number'] ?? '',
+          email: item['gmail_org_account'] ?? '',
+          latitude: item['locations']['latitude'] as double,
+          longitude: item['locations']['longitude'] as double,
+        ));
       }
-      final disasterResponse = await supabase
-          .from('disaster_responders')
-          .select('public_org_name, hotline_phone_number');
+
+      // disaster_responders
+      final disasterResponse = await supabase.from('disaster_responders').select(
+          'id, public_org_name, address, hotline_phone_number, gmail_org_account, locations!inner(latitude, longitude)');
       for (var item in disasterResponse) {
-        _services.add(
-          ServiceInfo(
-            'Disaster',
-            orgName: item['public_org_name'] ?? 'Disaster Responders',
-            hotlineNumber: item['hotline_phone_number'] ?? '',
-          ),
-        );
+        _services.add(ServiceInfo(
+          serviceType: 'Disaster',
+          id: item['id'],
+          orgName: item['public_org_name'] ?? 'Disaster Responders',
+          address: item['address'] ?? '',
+          hotlineNumber: item['hotline_phone_number'] ?? '',
+          email: item['gmail_org_account'] ?? '',
+          latitude: item['locations']['latitude'] as double,
+          longitude: item['locations']['longitude'] as double,
+        ));
       }
+
       setState(() {});
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-              'Failed to load emergency services. Please check connection'),
-          action: SnackBarAction(
-            label: 'Retry',
-            onPressed: _fetchServices,
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+                'Failed to load emergency services. Please check connection'),
+            action: SnackBarAction(label: 'Retry', onPressed: _fetchServices),
           ),
-        ),
-      );
-    }
-  }
-
-  Future<void> _launchCaller(String number) async {
-    final Uri launchUri = Uri(
-      scheme: 'tel',
-      path: number,
-    );
-    if (await canLaunchUrl(launchUri)) {
-      await launchUrl(launchUri);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not launch call to $number')),
-      );
+        );
+      }
     }
   }
 
@@ -660,21 +648,17 @@ class ResidentHomePageState extends State<ResidentHomePage>
             'Are you in an Emergency?',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'Gilroy',
-              color: Colors.white,
-            ),
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                fontFamily: 'Gilroy',
+                color: Colors.white),
           ),
           SizedBox(height: 14),
           Text(
             'Press the button below and help will reach you shortly.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 16,
-              color: Colors.white,
-              fontFamily: 'RobotoMono',
-            ),
+                fontSize: 16, color: Colors.white, fontFamily: 'RobotoMono'),
           ),
           SizedBox(height: 8),
         ],
@@ -696,33 +680,52 @@ class ResidentHomePageState extends State<ResidentHomePage>
             children: [
               const SizedBox(height: 16),
               Card(
-                child: ListTile(
-                  leading: const Icon(Icons.location_on, color: Colors.red),
-                  title: Text(
-                    _currentAddress ?? 'Detecting location...',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  side: const BorderSide(width: 1, color: Colors.grey),
+                ),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    image: const DecorationImage(
+                      image: AssetImage('assets/images/map_background.jpg'),
+                      fit: BoxFit.cover,
+                    ),
                   ),
-                  subtitle: const Text('Your current address'),
-                  trailing: const Icon(Icons.map),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (context) => const ResidentMap()),
-                    );
-                  },
+                  child: ListTile(
+                    title: Text(
+                      _currentAddress ?? 'Detecting location...',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: const Text('Your current address'),
+                    trailing: Image.asset(
+                      'assets/images/map.png',
+                      width: 56,
+                      height: 56,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Icon(Icons.map, color: Colors.grey),
+                    ),
+                    onTap: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const HomeNavigationPage(
+                            initialIndex: 0,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
-                'Are you in an Emergency?',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
+              const Text('Are you in an Emergency?',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               const Text(
-                'Select a service to call or view your location on the map',
-                style: TextStyle(color: Colors.grey),
-              ),
+                  'Select a service to call or view your location on the map',
+                  style: TextStyle(color: Colors.grey)),
               const SizedBox(height: 16),
               Expanded(
                 child: _services.isEmpty
@@ -730,46 +733,99 @@ class ResidentHomePageState extends State<ResidentHomePage>
                     : GridView.builder(
                         gridDelegate:
                             const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          crossAxisSpacing: 8,
-                          mainAxisSpacing: 8,
-                        ),
+                                crossAxisCount: 2,
+                                crossAxisSpacing: 8,
+                                mainAxisSpacing: 8),
                         itemCount: _services.length,
                         itemBuilder: (context, index) {
                           final service = _services[index];
+                          String imageAsset;
+                          switch (service.serviceType.toLowerCase()) {
+                            case 'police':
+                              imageAsset = 'assets/images/police.png';
+                              break;
+                            case 'rescue':
+                              imageAsset = 'assets/images/rescue.png';
+                              break;
+                            case 'firefighter':
+                              imageAsset = 'assets/images/firefighter.png';
+                              break;
+                            case 'disaster':
+                              imageAsset = 'assets/images/disaster.png';
+                              break;
+                            default:
+                              imageAsset = 'assets/images/default.png';
+                          }
+
                           return Card(
+                            elevation: 0,
+                            color: const Color.fromARGB(65, 255, 134, 134),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                side: const BorderSide(
+                                    width: 1, color: Colors.redAccent)),
                             child: InkWell(
-                              onTap: () async {
+                              onTap: () {
                                 if (service.hotlineNumber.isEmpty) {
-                                  ScaffoldMessenger.of(context)
-                                      .showSnackBar(const SnackBar(
-                                    content:
-                                        Text('No hotline number available'),
-                                    backgroundColor: Colors.red,
-                                  ));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content:
+                                          Text('No hotline number available'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
                                   return;
                                 }
-                                await _showCustomCallDialog(service);
+                                Navigator.push(
+                                  context,
+                                  PageRouteBuilder(
+                                    pageBuilder: (context, animation,
+                                            secondaryAnimation) =>
+                                        ResidentEmergencyMapPage(
+                                      service: service,
+                                      initialPosition: currentPosition,
+                                    ),
+                                    transitionsBuilder: (context, animation,
+                                        secondaryAnimation, child) {
+                                      const begin =
+                                          Offset(1.0, 0.0); // Slide from right
+                                      const end = Offset.zero;
+                                      const curve = Curves.easeInOut;
+                                      var tween = Tween(begin: begin, end: end)
+                                          .chain(CurveTween(curve: curve));
+                                      var offsetAnimation =
+                                          animation.drive(tween);
+                                      return SlideTransition(
+                                          position: offsetAnimation,
+                                          child: child);
+                                    },
+                                  ),
+                                );
                               },
                               child: Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    const Icon(Icons.phone, color: Colors.red),
+                                    Image.asset(
+                                      imageAsset,
+                                      width: 80,
+                                      height: 80,
+                                      errorBuilder:
+                                          (context, error, stackTrace) =>
+                                              const Icon(Icons.phone,
+                                                  color: Colors.red, size: 80),
+                                    ),
                                     const SizedBox(height: 8),
                                     Text(
                                       service.orgName,
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.w600),
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 20,
+                                          fontFamily: 'Gilroy'),
                                       textAlign: TextAlign.center,
                                     ),
                                     const SizedBox(height: 4),
-                                    Text(
-                                      service.serviceType,
-                                      style:
-                                          const TextStyle(color: Colors.grey),
-                                    ),
                                   ],
                                 ),
                               ),
@@ -783,25 +839,6 @@ class ResidentHomePageState extends State<ResidentHomePage>
         );
       },
     );
-  }
-
-  // Handle bottom navigation bar taps
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-
-    switch (index) {
-      case 0: // Map tab
-
-        break;
-      case 1: // Call Emergency tab
-
-        break;
-      case 2: // Basic First Aid Tutorials tab
-
-        break;
-    }
   }
 
   @override
@@ -824,7 +861,6 @@ class ResidentHomePageState extends State<ResidentHomePage>
                       child: Stack(
                         alignment: Alignment.center,
                         children: [
-                          // First wave animation (outermost ripple effect)
                           AnimatedBuilder(
                             animation: _waveAnimation,
                             builder: (context, child) {
@@ -840,7 +876,6 @@ class ResidentHomePageState extends State<ResidentHomePage>
                               );
                             },
                           ),
-                          // Second wave animation (slightly delayed)
                           AnimatedBuilder(
                             animation: _waveAnimation2,
                             builder: (context, child) {
@@ -856,7 +891,6 @@ class ResidentHomePageState extends State<ResidentHomePage>
                               );
                             },
                           ),
-                          // Third wave animation (delayed further)
                           AnimatedBuilder(
                             animation: _waveAnimation3,
                             builder: (context, child) {
@@ -872,37 +906,26 @@ class ResidentHomePageState extends State<ResidentHomePage>
                               );
                             },
                           ),
-                          // Second pulse animation (slightly larger)
                           ScaleTransition(
                             scale: _pulseAnimation2,
                             child: Container(
-                              width:
-                                  175, // Slightly larger than the main button
+                              width: 175,
                               height: 175,
                               decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.white
-                                    .withOpacity(0.2), // Semi-transparent
-                              ),
+                                  shape: BoxShape.circle,
+                                  color: Colors.white.withOpacity(0.2)),
                             ),
                           ),
-                          // First pulse animation (innermost)
                           ScaleTransition(
                             scale: _pulseAnimation,
                             child: Container(
-                              width: 150, // Main button size
+                              width: 150,
                               height: 150,
                               decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.white,
-                              ),
+                                  shape: BoxShape.circle, color: Colors.white),
                               child: const Center(
-                                child: Icon(
-                                  Icons.phone,
-                                  size: 70,
-                                  color: Colors.redAccent,
-                                ),
-                              ),
+                                  child: Icon(Icons.phone,
+                                      size: 70, color: Colors.redAccent)),
                             ),
                           ),
                         ],
@@ -914,62 +937,8 @@ class ResidentHomePageState extends State<ResidentHomePage>
               ],
             ),
             if (!_isLocationPermissionGranted)
-              Container(
-                color: Colors.grey.withOpacity(0.5),
-              ),
+              Container(color: Colors.grey.withOpacity(0.5)),
           ],
-        ),
-      ),
-      bottomNavigationBar: Container(
-        color: Colors.white,
-        child: Padding(
-          padding: const EdgeInsets.only(
-              top: 0.0, right: 0.0, left: 0.0, bottom: 12.0),
-          child: BottomNavigationBar(
-            items: <BottomNavigationBarItem>[
-              BottomNavigationBarItem(
-                icon: Padding(
-                  padding: const EdgeInsets.only(
-                      top: 0.0, right: 4.0, left: 4.0, bottom: 6.0),
-                  child:
-                      _buildNavIcon(Icons.map_rounded, Icons.map_outlined, 0),
-                ),
-                label: 'Emcall Map',
-              ),
-              BottomNavigationBarItem(
-                icon: Padding(
-                  padding: const EdgeInsets.only(
-                      top: 0.0, right: 4.0, left: 4.0, bottom: 6.0),
-                  child: _buildNavIcon(
-                      Icons.phone_rounded, Icons.phone_outlined, 1),
-                ),
-                label: 'Call Emergency',
-              ),
-              BottomNavigationBarItem(
-                icon: Padding(
-                  padding: const EdgeInsets.only(
-                      top: 0.0, right: 4.0, left: 4.0, bottom: 6.0),
-                  child: _buildNavIcon(Icons.medical_services_rounded,
-                      Icons.medical_services_outlined, 2),
-                ),
-                label: 'First Aid',
-              ),
-            ],
-            currentIndex: _selectedIndex,
-            selectedItemColor: Colors.black,
-            unselectedItemColor: Colors.black,
-            selectedFontSize: 12,
-            unselectedFontSize: 12,
-            backgroundColor: Colors.white,
-            selectedIconTheme:
-                const IconThemeData(size: 26, color: Colors.black),
-            unselectedIconTheme:
-                const IconThemeData(size: 24, color: Colors.black),
-            showUnselectedLabels: true,
-            elevation: 0.0,
-            onTap: _onItemTapped,
-            type: BottomNavigationBarType.fixed,
-          ),
         ),
       ),
     );
@@ -979,9 +948,7 @@ class ResidentHomePageState extends State<ResidentHomePage>
     return Container(
       height: 90,
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-      decoration: const BoxDecoration(
-        color: Colors.redAccent,
-      ),
+      decoration: const BoxDecoration(color: Colors.redAccent),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -993,19 +960,17 @@ class ResidentHomePageState extends State<ResidentHomePage>
                 Text(
                   isNewUser ? 'Hello!' : 'Welcome back!',
                   style: const TextStyle(
-                    fontSize: 14,
-                    fontFamily: 'RobotoMono',
-                    color: Colors.white70,
-                  ),
+                      fontSize: 14,
+                      fontFamily: 'RobotoMono',
+                      color: Colors.white70),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   username ?? 'Loading...',
                   style: const TextStyle(
-                    fontSize: 16,
-                    fontFamily: 'RobotoMono',
-                    color: Colors.white,
-                  ),
+                      fontSize: 16,
+                      fontFamily: 'RobotoMono',
+                      color: Colors.white),
                 ),
               ],
             ),
@@ -1023,20 +988,14 @@ class ResidentHomePageState extends State<ResidentHomePage>
                     const begin = Offset(1.0, 0.0);
                     const end = Offset.zero;
                     const curve = Curves.easeInOut;
-
                     var tween = Tween(begin: begin, end: end)
                         .chain(CurveTween(curve: curve));
                     var offsetAnimation = animation.drive(tween);
-
                     return SlideTransition(
-                      position: offsetAnimation,
-                      child: child,
-                    );
+                        position: offsetAnimation, child: child);
                   },
                 ),
-              ).then((_) {
-                _loadProfileData();
-              });
+              ).then((_) => _loadProfileData());
             },
             child: CircleAvatar(
               radius: 24,
@@ -1051,198 +1010,21 @@ class ResidentHomePageState extends State<ResidentHomePage>
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             image: DecorationImage(
-                              image: imageProvider,
-                              fit: BoxFit.cover,
-                            ),
+                                image: imageProvider, fit: BoxFit.cover),
                           ),
                         ),
                         placeholder: (context, url) =>
                             const CircularProgressIndicator(),
                         errorWidget: (context, url, error) => const Icon(
-                          Icons.person,
-                          size: 40,
-                          color: Colors.red,
-                        ),
+                            Icons.person,
+                            size: 40,
+                            color: Colors.red),
                       )
-                    : const Icon(
-                        Icons.person,
-                        size: 40,
-                        color: Colors.red,
-                      ),
+                    : const Icon(Icons.person, size: 40, color: Colors.red),
               ),
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Future<void> _showCustomCallDialog(ServiceInfo service) async {
-    Timer? countdownTimer;
-    int secondsRemaining = 59;
-
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            void startTimer() {
-              countdownTimer =
-                  Timer.periodic(const Duration(seconds: 1), (timer) {
-                if (secondsRemaining <= 0) {
-                  timer.cancel();
-                  Navigator.of(dialogContext).pop();
-                  _launchCaller(service.hotlineNumber);
-                } else {
-                  setState(() {
-                    secondsRemaining--;
-                  });
-                }
-              });
-            }
-
-            if (countdownTimer == null) {
-              startTimer();
-            }
-            return Dialog(
-              backgroundColor: Colors.white,
-              elevation: 0,
-              child: Stack(
-                alignment: Alignment.topCenter,
-                children: [
-                  Container(
-                    margin: const EdgeInsets.only(top: 60),
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 20, horizontal: 16),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(height: 40),
-                        Center(
-                          child: Text(
-                            'Emergency Help Needed?',
-                            style: TextStyle(
-                              color: Colors.grey[800],
-                              fontSize: 30,
-                              fontWeight: FontWeight.bold,
-                              fontFamily: 'Gilroy',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          '${service.orgName} is always ready to help you!',
-                          style: TextStyle(
-                            color: Colors.grey[500],
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'RobotoMono',
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Card(
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            side: BorderSide(
-                                color: Colors.grey.shade400, width: 1),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                                vertical: 4, horizontal: 12),
-                            child: Text(
-                              '${secondsRemaining}s',
-                              style: TextStyle(
-                                  color: Colors.grey[600], fontSize: 14),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            ElevatedButton(
-                              onPressed: () {
-                                countdownTimer?.cancel();
-                                Navigator.pop(dialogContext);
-                              },
-                              style: ElevatedButton.styleFrom(
-                                shape: const CircleBorder(),
-                                padding: const EdgeInsets.all(16),
-                                backgroundColor: Colors.grey[800],
-                              ),
-                              child: const Icon(Icons.close,
-                                  color: Colors.red, size: 32),
-                            ),
-                            ElevatedButton(
-                              onPressed: () async {
-                                countdownTimer?.cancel();
-                                await _recordServiceCall(service);
-                                _launchCaller(service.hotlineNumber);
-                                Navigator.of(dialogContext).pop();
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        ResidentEmergencyMapPage(
-                                      initialPosition: currentPosition,
-                                      serviceType:
-                                          service.serviceType.toLowerCase(),
-                                    ),
-                                  ),
-                                );
-                              },
-                              style: ElevatedButton.styleFrom(
-                                shape: const CircleBorder(),
-                                padding: const EdgeInsets.all(16),
-                                backgroundColor: Colors.grey[800],
-                              ),
-                              child: const Icon(Icons.check,
-                                  color: Colors.green, size: 32),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const CircleAvatar(
-                    radius: 45,
-                    backgroundColor: Colors.blueGrey,
-                    child: CircleAvatar(
-                      radius: 40,
-                      backgroundColor: Colors.blueGrey,
-                      child: Icon(Icons.phone, color: Colors.white, size: 48),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    ).then((_) {
-      countdownTimer?.cancel();
-    });
-  }
-}
-
-// Placeholder page for Basic First Aid Tutorials
-class BasicFirstAidTutorialsPage extends StatelessWidget {
-  const BasicFirstAidTutorialsPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Basic First Aid Tutorials'),
-        backgroundColor: Colors.redAccent,
-      ),
-      body: const Center(
-        child: Text(
-          'Basic First Aid Tutorials Page\n(Placeholder)',
-          style: TextStyle(fontSize: 20),
-          textAlign: TextAlign.center,
-        ),
       ),
     );
   }

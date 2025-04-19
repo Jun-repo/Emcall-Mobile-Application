@@ -1,9 +1,21 @@
 class ServiceInfo {
   final String serviceType;
+  final int id;
   final String orgName;
+  final String address;
   final String hotlineNumber;
-  final int? id;
+  final String email;
+  final double latitude;
+  final double longitude;
 
-  ServiceInfo(this.serviceType,
-      {required this.orgName, required this.hotlineNumber, this.id});
+  ServiceInfo({
+    required this.serviceType,
+    required this.id,
+    required this.orgName,
+    required this.address,
+    required this.hotlineNumber,
+    required this.email,
+    required this.latitude,
+    required this.longitude,
+  });
 }

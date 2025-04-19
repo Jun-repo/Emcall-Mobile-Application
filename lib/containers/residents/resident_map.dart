@@ -6,29 +6,10 @@ class ResidentMap extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return const Scaffold(
       body: Stack(
         children: [
-          const FullMap(),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: GestureDetector(
-                onTap: () => Navigator.of(context).pop(),
-                child: Container(
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                  ),
-                  padding: const EdgeInsets.all(8.0),
-                  child: const Icon(
-                    Icons.arrow_back,
-                    color: Colors.redAccent,
-                  ),
-                ),
-              ),
-            ),
-          ),
+          FullMap(),
         ],
       ),
     );

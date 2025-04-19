@@ -1,9 +1,10 @@
 // ignore_for_file: use_build_context_synchronously
 
-import 'package:emcall/auth/forms/login_form.dart';
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:emcall/components/onboarding/onboarding_view.dart';
 import 'package:emcall/containers/organizations/pages/organization_home_page.dart';
-import 'package:emcall/containers/residents/pages/resident_home_page.dart';
+import 'package:emcall/containers/residents/pages/home_navigation_page.dart';
+import 'package:emcall/containers/workers/pages/worker_home_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
@@ -15,48 +16,40 @@ Future<void> main() async {
   await setup();
   await Supabase.initialize(
     url: 'https://gghofmeouyavrcdfwcsw.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaG9mbWVvdXlhdnJjZGZ3Y3N3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzA3NTg1MzQsImV4cCI6MjA0NjMzNDUzNH0.IEmi_a1vIepHSv9D0b29HJ8NOKOsMx_OwDYXey2NHGo',
+    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
   );
 
   final prefs = await SharedPreferences.getInstance();
-  final onboarding = prefs.getBool("onboarding") ?? false;
-  final loggedIn = prefs.getBool("loggedIn") ?? false;
+  final onboarding = prefs.getBool('onboarding') ?? false;
+  final loggedIn = prefs.getBool('loggedIn') ?? false;
   Widget home;
 
   if (!onboarding) {
     home = const OnboardingView();
   } else if (loggedIn) {
-    final userType = prefs.getString("userType");
-    if (userType == "resident") {
-      final firstName = prefs.getString("firstName") ?? "";
-      final middleName = prefs.getString("middleName") ?? "";
-      final lastName = prefs.getString("lastName") ?? "";
-      final suffix = prefs.getString("suffix") ?? "";
-      home = ResidentHomePage(
-        firstName: firstName,
-        middleName: middleName,
-        lastName: lastName,
-        suffix: suffix,
-      );
-    } else if (userType == "organization") {
-      final orgName = prefs.getString("orgName") ?? "Organization";
+    final userType = prefs.getString('userType');
+    if (userType == 'resident') {
+      home = const HomeNavigationPage(initialIndex: 1);
+    } else if (userType == 'worker') {
+      home = const WorkerHomePage();
+    } else if (userType == 'organization') {
+      final orgName = prefs.getString('orgName') ?? 'Organization';
       final orgAddress =
-          prefs.getString("orgAddress") ?? "Address not provided";
+          prefs.getString('orgAddress') ?? 'Address not provided';
       home = OrganizationHomePage(orgName: orgName, orgAddress: orgAddress);
     } else {
-      home = const LoginForm();
+      home = const WelcomePage();
     }
   } else {
-    home = const LoginForm();
+    home = const WelcomePage();
   }
 
   runApp(MainApp(home: home));
 }
 
 Future<void> setup() async {
-  await dotenv.load(fileName: ".env");
-  MapboxOptions.setAccessToken(dotenv.env["MAPBOX_ACCESS_TOKEN"]!);
+  await dotenv.load(fileName: '.env');
+  MapboxOptions.setAccessToken(dotenv.env['MAPBOX_ACCESS_TOKEN']!);
 }
 
 class MainApp extends StatelessWidget {

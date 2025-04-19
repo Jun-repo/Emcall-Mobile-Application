@@ -101,70 +101,142 @@ class _OTPVerificationPageState extends State<OTPVerificationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('OTP Verification'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const Icon(Icons.lock_outline, size: 80, color: Colors.teal),
-            const SizedBox(height: 20),
-            Text(
-              'Enter OTP sent to\n${widget.email}',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 18),
-            ),
-            const SizedBox(height: 30),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: List.generate(
-                  6,
-                  (index) => SizedBox(
-                        width: 45,
-                        child: TextField(
-                          controller: _controllers[index],
-                          focusNode: index == 0
-                              ? _firstFieldFocusNode
-                              : null, // Assign focus node to the first field
-                          textAlign: TextAlign.center,
-                          keyboardType: TextInputType.number,
-                          maxLength: 1,
-                          style: const TextStyle(
-                              fontSize: 18), // Improve text style
-                          decoration: const InputDecoration(
-                            counterText: '',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (value) {
-                            if (value.length == 1 && index < 5) {
-                              FocusScope.of(context).nextFocus();
-                            }
-                            if (value.isEmpty && index > 0) {
-                              FocusScope.of(context).previousFocus();
-                            }
-                          },
-                        ),
-                      )),
-            ),
-            const SizedBox(height: 30),
-            ElevatedButton(
-              onPressed: _isLoading ? null : _verifyOTP,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.teal,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+      backgroundColor: Colors.white,
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
               ),
-              child: _isLoading
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Text('Verify OTP', style: TextStyle(fontSize: 18)),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 120),
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Image.asset(
+                      "assets/images/otp.png",
+                      height: 350,
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  Text(
+                    'Enter OTP sent to\n${widget.email}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 18),
+                  ),
+                  const SizedBox(height: 30),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: List.generate(
+                        6,
+                        (index) => SizedBox(
+                              width: 45,
+                              child: TextField(
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  color: Colors.black,
+                                ),
+                                controller: _controllers[index],
+                                focusNode: index == 0
+                                    ? _firstFieldFocusNode
+                                    : null, // Assign focus node to the first field
+                                textAlign: TextAlign.center,
+                                keyboardType: TextInputType.number,
+                                maxLength: 1,
+
+                                decoration: const InputDecoration(
+                                  counterText: '',
+                                  border: OutlineInputBorder(
+                                    borderRadius: const BorderRadius.all(
+                                      Radius.circular(4.0),
+                                    ),
+                                    borderSide: const BorderSide(
+                                      color: Colors.redAccent,
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: const BorderRadius.all(
+                                      Radius.circular(4.0),
+                                    ),
+                                    borderSide: const BorderSide(
+                                      color: Color.fromARGB(255, 202, 202, 202),
+                                      width: 1.0,
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: const BorderRadius.all(
+                                      Radius.circular(4.0),
+                                    ),
+                                    borderSide: const BorderSide(
+                                      color: Colors.redAccent,
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                ),
+                                onChanged: (value) {
+                                  if (value.length == 1 && index < 5) {
+                                    FocusScope.of(context).nextFocus();
+                                  }
+                                  if (value.isEmpty && index > 0) {
+                                    FocusScope.of(context).previousFocus();
+                                  }
+                                },
+                              ),
+                            )),
+                  ),
+                  const SizedBox(height: 15),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _verifyOTP,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(vertical: 16.0),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8.0),
+                        ),
+                      ),
+                      child: _isLoading
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text('Verify',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.white,
+                              )),
+                    ),
+                  ),
+                  SizedBox(height: 60),
+                ],
+              ),
             ),
-          ],
-        ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: SizedBox(
+                height: 48,
+                width: 48,
+                child: FloatingActionButton(
+                  onPressed: () => Navigator.pop(context),
+                  elevation: 4,
+                  backgroundColor: Colors.white,
+                  shape: const CircleBorder(),
+                  child: const Icon(
+                    Icons.arrow_back,
+                    color: Colors.redAccent,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

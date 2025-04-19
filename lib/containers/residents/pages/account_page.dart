@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:emcall/auth/forms/login_form.dart';
+
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -169,7 +170,7 @@ class AccountPageState extends State<AccountPage> {
       Navigator.pushReplacement(
         this.context,
         MaterialPageRoute(
-          builder: (context) => const LoginForm(),
+          builder: (context) => const WelcomePage(),
         ),
       );
     }

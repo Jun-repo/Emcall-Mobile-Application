@@ -1,19 +1,24 @@
 // ignore_for_file: use_build_context_synchronously
 
+import 'dart:io';
+
 import 'package:bcrypt/bcrypt.dart';
+import 'package:emcall/auth/forms/account_preview_page.dart';
+import 'package:emcall/auth/forms/welcome_page.dart';
 import 'package:emcall/containers/residents/create_resident_account_form.dart';
 import 'package:emcall/containers/organizations/create_organization_account_form.dart';
 import 'package:emcall/containers/workers/create_worker_account_form.dart';
 import 'package:emcall/pages/passwords/forgot_password_page.dart';
-import 'package:emcall/containers/organizations/pages/organization_home_page.dart';
-import 'package:emcall/containers/residents/pages/resident_home_page.dart';
-import 'package:emcall/containers/workers/pages/worker_home_page.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'enums.dart';
 
 class LoginForm extends StatefulWidget {
-  const LoginForm({super.key});
+  final UserType userType;
+  const LoginForm({super.key, required this.userType});
 
   @override
   LoginFormState createState() => LoginFormState();
@@ -23,161 +28,241 @@ class LoginFormState extends State<LoginForm> {
   final TextEditingController usernameController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   bool _isLoading = false;
+  bool _rememberMe = false;
+  static const Duration _snackBarDisplayDuration = Duration(seconds: 3);
+  @override
+  void initState() {
+    super.initState();
+    _loadRememberMe();
+  }
+
+  void _showNoNetworkSnackBar({
+    Duration duration = _snackBarDisplayDuration,
+    Animation<double>? animation,
+  }) {
+    final snack = SnackBar(
+      content: const Text(
+          'No Internet Connection, \nBro! checked your network data/wifi before login...'),
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.only(top: 16, left: 16, right: 16, bottom: 20),
+      backgroundColor: Colors.redAccent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(4.0),
+      ),
+      duration: duration,
+      animation: animation,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(snack);
+  }
+
+  Future<void> _loadRememberMe() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _rememberMe = prefs.getBool('rememberMe') ?? false;
+      if (_rememberMe) {
+        usernameController.text = prefs.getString('savedUsername') ?? '';
+        passwordController.text = prefs.getString('savedPassword') ?? '';
+      }
+    });
+  }
+
+  Future<void> _saveCredentials(String username, String password) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_rememberMe) {
+      await prefs.setBool('rememberMe', true);
+      await prefs.setString('savedUsername', username);
+      await prefs.setString('savedPassword', password);
+    } else {
+      await prefs.setBool('rememberMe', false);
+      await prefs.remove('savedUsername');
+      await prefs.remove('savedPassword');
+    }
+  }
 
   OutlineInputBorder get customInputBorder {
     return OutlineInputBorder(
-      borderRadius: BorderRadius.circular(10.0),
+      borderRadius: BorderRadius.circular(8.0),
       borderSide: const BorderSide(
-        color: Colors.blue,
-        width: 1.5,
+        color: Color.fromARGB(255, 198, 198, 198),
+        width: 0.7,
       ),
     );
   }
 
   Future<void> _handleLogin() async {
     setState(() => _isLoading = true);
-    _showLoadingDialog(); // Show loading dialog
+    _showLoadingDialog();
+
+    // ① Check network first via switch
+    final result = await Connectivity().checkConnectivity();
+    if (result == ConnectivityResult.wifi) {
+      _showNoNetworkSnackBar();
+      setState(() => _isLoading = false);
+      return;
+      // ideal: full-speed, typically unmetered
+    } else if (result == ConnectivityResult.mobile) {
+      // warn: user may incur data charges
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You’re on mobile data. Charges may apply.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      // treat as “connected,” but you might log or adapt UI
+    } else if (result == ConnectivityResult.none) {
+      // show “no network” UI and stop
+      _showNoNetworkSnackBar();
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    // ② Only if we have SOME connection, proceed
+
     final supabase = Supabase.instance.client;
     final username = usernameController.text.trim();
     final password = passwordController.text.trim();
-    final prefs = await SharedPreferences.getInstance();
-    bool loginSuccessful = false;
 
     try {
-      // Check Residents
-      final residentResponse = await supabase
-          .from('residents')
-          .select()
-          .eq('username', username)
-          .maybeSingle();
-
-      if (residentResponse != null) {
-        final storedHash = residentResponse['password_hash'] as String;
-        if (BCrypt.checkpw(password, storedHash)) {
-          loginSuccessful = true;
-          final residentId = residentResponse['id'];
-          final firstName = residentResponse['first_name'] ?? '';
-          final middleName = residentResponse['middle_name'] ?? '';
-          final lastName = residentResponse['last_name'] ?? '';
-          final suffix = residentResponse['suffix_name'] ?? '';
-          final email = residentResponse['personal_email'] ?? '';
-          final address = residentResponse['address'] ?? '';
-          await prefs.setBool("loggedIn", true);
-          await prefs.setString("userType", "resident");
-          await prefs.setString("username", username);
-          await prefs.setInt("resident_id", residentId);
-          await prefs.setString("firstName", firstName);
-          await prefs.setString("middleName", middleName);
-          await prefs.setString("lastName", lastName);
-          await prefs.setString("suffix", suffix);
-          await prefs.setString("personal_email", email);
-          await prefs.setString("address", address);
-
-          // Dismiss the loading dialog before navigation
-          Navigator.pop(context);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ResidentHomePage(
-                firstName: firstName,
-                middleName: middleName,
-                lastName: lastName,
-                suffix: suffix,
-                address: address,
-              ),
-            ),
-          );
-          return;
-        }
-      }
-
-      // Check Workers
-      final workerResponse = await supabase
-          .from('workers')
-          .select()
-          .eq('username', username)
-          .maybeSingle();
-
-      if (workerResponse != null) {
-        final storedHash = workerResponse['password_hash'] as String;
-        if (BCrypt.checkpw(password, storedHash)) {
-          loginSuccessful = true;
-          final workerId = workerResponse['id'];
-          final firstName = workerResponse['first_name'] ?? '';
-          final middleName = workerResponse['middle_name'] ?? '';
-          final lastName = workerResponse['last_name'] ?? '';
-          final suffix = workerResponse['suffix_name'] ?? '';
-
-          await prefs.setBool("loggedIn", true);
-          await prefs.setString("userType", "worker");
-          await prefs.setString("username", username);
-          await prefs.setInt("worker_id", workerId);
-          await prefs.setString("firstName", firstName);
-          await prefs.setString("middleName", middleName);
-          await prefs.setString("lastName", lastName);
-          await prefs.setString("suffix", suffix);
-
-          Navigator.pop(context);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const WorkerHomePage(),
-            ),
-          );
-          return;
-        }
-      }
-
-      // Check Organizations
-      const serviceTables = [
-        'police',
-        'rescue',
-        'firefighter',
-        'disaster_responders'
-      ];
-
-      for (final table in serviceTables) {
-        final orgResponse = await supabase
-            .from(table)
+      if (widget.userType == UserType.resident) {
+        final residentResponse = await supabase
+            .from('residents')
             .select()
-            .eq('public_org_name', username)
+            .eq('username', username)
             .maybeSingle();
-
-        if (orgResponse != null) {
-          final storedHash = orgResponse['org_password_hash'] as String;
-          if (BCrypt.checkpw(password, storedHash)) {
-            loginSuccessful = true;
-            final orgName = orgResponse['public_org_name'] ?? 'Organization';
-            final orgAddress = orgResponse['address'] ?? 'Address not provided';
-
-            await prefs.setBool("loggedIn", true);
-            await prefs.setString("userType", "organization");
-            await prefs.setString("orgName", orgName);
-            await prefs.setString("orgAddress", orgAddress);
-
+        if (residentResponse != null &&
+            BCrypt.checkpw(password, residentResponse['password_hash'])) {
+          final residentData = {
+            'id': residentResponse['id'],
+            'username': username,
+            'firstName': residentResponse['first_name'] ?? '',
+            'middleName': residentResponse['middle_name'] ?? '',
+            'lastName': residentResponse['last_name'] ?? '',
+            'suffix': residentResponse['suffix_name'] ?? '',
+            'profileImage': residentResponse['profile_image'],
+            'email': residentResponse['personal_email'] ?? '',
+            'address': residentResponse['address'] ?? '',
+          };
+          await _saveCredentials(username, password);
+          Navigator.pop(context);
+          Navigator.of(context).push(
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) =>
+                  AccountPreviewPage(
+                userType: widget.userType,
+                userData: residentData,
+              ),
+              transitionsBuilder:
+                  (context, animation, secondaryAnimation, child) {
+                final tween =
+                    Tween(begin: const Offset(1.0, 0.0), end: Offset.zero)
+                        .chain(CurveTween(curve: Curves.ease));
+                return SlideTransition(
+                    position: animation.drive(tween), child: child);
+              },
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          _showErrorDialog('Invalid or No credentials.');
+        }
+      } else if (widget.userType == UserType.worker) {
+        final workerResponse = await supabase
+            .from('workers')
+            .select()
+            .eq('username', username)
+            .maybeSingle();
+        if (workerResponse != null &&
+            BCrypt.checkpw(password, workerResponse['password_hash'])) {
+          final workerData = {
+            'id': workerResponse['id'],
+            'username': username,
+            'firstName': workerResponse['first_name'] ?? '',
+            'middleName': workerResponse['middle_name'] ?? '',
+            'lastName': workerResponse['last_name'] ?? '',
+            'suffix': workerResponse['suffix_name'] ?? '',
+            'profileImage': workerResponse['profile_image'],
+            'email': workerResponse['personal_email'] ?? '',
+          };
+          await _saveCredentials(username, password);
+          Navigator.pop(context);
+          Navigator.of(context).push(
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) =>
+                  AccountPreviewPage(
+                userType: widget.userType,
+                userData: workerData,
+              ),
+              transitionsBuilder:
+                  (context, animation, secondaryAnimation, child) {
+                final tween =
+                    Tween(begin: const Offset(1.0, 0.0), end: Offset.zero)
+                        .chain(CurveTween(curve: Curves.ease));
+                return SlideTransition(
+                    position: animation.drive(tween), child: child);
+              },
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          _showErrorDialog('Invalid or No credentials.');
+        }
+      } else if (widget.userType == UserType.organization) {
+        const serviceTables = [
+          'police',
+          'rescue',
+          'firefighter',
+          'disaster_responders'
+        ];
+        for (final table in serviceTables) {
+          final orgResponse = await supabase
+              .from(table)
+              .select()
+              .eq('public_org_name', username)
+              .maybeSingle();
+          if (orgResponse != null &&
+              BCrypt.checkpw(password, orgResponse['org_password_hash'])) {
+            final orgData = {
+              'orgName': orgResponse['public_org_name'] ?? 'Organization',
+              'orgAddress': orgResponse['address'] ?? 'Address not provided',
+              'orgType': table,
+              'username': username,
+            };
+            await _saveCredentials(username, password);
             Navigator.pop(context);
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => OrganizationHomePage(
-                  orgName: orgName,
-                  orgAddress: orgAddress,
+            Navigator.of(context).push(
+              PageRouteBuilder(
+                pageBuilder: (context, animation, secondaryAnimation) =>
+                    AccountPreviewPage(
+                  userType: widget.userType,
+                  userData: orgData,
                 ),
+                transitionsBuilder:
+                    (context, animation, secondaryAnimation, child) {
+                  final tween =
+                      Tween(begin: const Offset(1.0, 0.0), end: Offset.zero)
+                          .chain(CurveTween(curve: Curves.ease));
+                  return SlideTransition(
+                      position: animation.drive(tween), child: child);
+                },
               ),
             );
+
             return;
           }
         }
-      }
-
-      // If no branch succeeded, show error.
-      if (!loginSuccessful) {
-        Navigator.pop(context); // dismiss loading dialog
-        _showErrorDialog('Invalid Credentials.');
+        Navigator.pop(context);
+        _showErrorDialog('Invalid or No credentials.');
       }
     } catch (e) {
       Navigator.pop(context); // dismiss loading dialog
-      _showErrorDialog('An error occurred: $e');
+
+      if (e is SocketException) {
+        // network broke during the fetch
+        _showNoNetworkSnackBar();
+      } else {
+        _showNoNetworkSnackBar();
+      }
     } finally {
       setState(() => _isLoading = false);
     }
@@ -186,46 +271,36 @@ class LoginFormState extends State<LoginForm> {
   void _showLoadingDialog() {
     showGeneralDialog(
       context: context,
-      barrierDismissible: false, // Prevent dismissing by tapping outside
+      barrierDismissible: false,
       barrierLabel: "Loading",
-      barrierColor: Colors.black.withOpacity(0.5), // Dark overlay
+      barrierColor: Colors.black.withOpacity(0.5),
       transitionDuration: const Duration(milliseconds: 500),
-      pageBuilder: (context, animation, secondaryAnimation) {
-        // The pageBuilder is required but won't be used directly.
-        return const SizedBox.shrink();
-      },
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          const SizedBox.shrink(),
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         return ScaleTransition(
           scale: Tween<double>(begin: 0.5, end: 1.0).animate(
             CurvedAnimation(parent: animation, curve: Curves.fastOutSlowIn),
           ),
-          child: GestureDetector(
-            onTap: () {
-              Navigator.pop(context); // Close the dialog
-              setState(() => _isLoading = false); // Stop loading
-            },
-            child: Center(
-              child: Material(
-                color: Colors.transparent,
-                child: Container(
-                  padding: const EdgeInsets.all(40.0),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(28.0),
-                    boxShadow: [
-                      BoxShadow(
+          child: Center(
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.all(40.0),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(28.0),
+                  boxShadow: [
+                    BoxShadow(
                         color: Colors.black.withOpacity(0.2),
                         blurRadius: 10,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: const CircularProgressIndicator(
+                        offset: const Offset(0, 5))
+                  ],
+                ),
+                child: const CircularProgressIndicator(
                     color: Colors.redAccent,
                     strokeWidth: 8.0,
-                    strokeCap: StrokeCap.round,
-                  ),
-                ),
+                    strokeCap: StrokeCap.round),
               ),
             ),
           ),
@@ -238,12 +313,40 @@ class LoginFormState extends State<LoginForm> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Login Failed'),
-        content: Text(message),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(30.0),
+        ),
+        title: const Text(
+          'Failed to Login',
+          style: TextStyle(fontFamily: 'Gilroy', color: Colors.black),
+        ),
+        content: Text(
+          message,
+          style: TextStyle(
+              fontSize: 16, color: const Color.fromARGB(255, 26, 26, 26)),
+        ),
+        actionsPadding: EdgeInsets.only(
+          top: 25,
+          bottom: 20,
+          left: 25,
+          right: 25,
+        ),
+        // remove actionsPadding if you want default spacing
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12.0),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24.0),
+                ),
+              ),
+              child: const Text('OK', style: TextStyle(fontSize: 16)),
+            ),
           ),
         ],
       ),
@@ -253,29 +356,23 @@ class LoginFormState extends State<LoginForm> {
   void _showAccountTypeBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // Allows the sheet to take up necessary height
-      backgroundColor:
-          Colors.transparent, // Transparent background for floating effect
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (BuildContext context) {
         return Padding(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 16.0, vertical: 20.0), // Padding around the sheet
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 20.0),
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: const BorderRadius.only(
                 bottomLeft: Radius.circular(20.0),
                 bottomRight: Radius.circular(20.0),
-                topLeft: Radius.circular(20.0),
-                topRight: Radius.circular(20.0),
               ),
-              border: Border.all(color: Colors.blue, width: 1.5),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 10,
-                  offset: const Offset(0, 5), // Shadow for floating effect
-                ),
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 10,
+                    offset: const Offset(0, 5))
               ],
             ),
             child: Padding(
@@ -283,22 +380,19 @@ class LoginFormState extends State<LoginForm> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'Choose Account Type',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
+                  const Text('Choose Account Type',
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   ListTile(
                     title: const Text('Create Resident Account'),
                     onTap: () {
                       Navigator.pop(context);
                       Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) =>
-                              const CreateResidentAccountForm(),
-                        ),
-                      );
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  const CreateResidentAccountForm()));
                     },
                   ),
                   ListTile(
@@ -339,18 +433,15 @@ class LoginFormState extends State<LoginForm> {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(20.0),
-                bottomRight: Radius.circular(20.0),
-                topLeft: Radius.circular(20.0),
-                topRight: Radius.circular(20.0),
+                topLeft: customRadius,
+                topRight: customRadius,
               ),
-              border: Border.all(color: Colors.blue, width: 1.5),
+              border: Border.all(color: Colors.redAccent, width: 1.5),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 10,
-                  offset: const Offset(0, 5),
-                ),
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 10,
+                    offset: const Offset(0, 5))
               ],
             ),
             child: Padding(
@@ -358,43 +449,37 @@ class LoginFormState extends State<LoginForm> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'Choose ${isWorker ? 'Worker' : 'Organization'} Type',
-                    style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
+                  Text('Choose ${isWorker ? 'Worker' : 'Organization'} Type',
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
-                  ...orgTypes
-                      .map((type) => ListTile(
-                            title: Text(
-                                '${type[0].toUpperCase()}${type.substring(1)}'),
-                            onTap: () {
-                              Navigator.pop(context);
-                              if (isWorker) {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
+                  ...orgTypes.map((type) => ListTile(
+                        title: Text(
+                            '${type[0].toUpperCase()}${type.substring(1)}'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          if (isWorker) {
+                            Navigator.push(
+                                context,
+                                MaterialPageRoute(
                                     builder: (context) =>
-                                        CreateWorkerAccountForm(orgType: type),
-                                  ),
-                                );
-                              } else {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        CreateOrganizationAccountForm(
-                                      orgType: type,
-                                      publicOrgName:
-                                          '${type[0].toUpperCase()}${type.substring(1)}',
-                                    ),
-                                  ),
-                                );
-                              }
-                            },
-                          ))
-                      // ignore: unnecessary_to_list_in_spreads
-                      .toList(),
+                                        CreateWorkerAccountForm(
+                                            orgType: type)));
+                          } else {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    CreateOrganizationAccountForm(
+                                  orgType: type,
+                                  publicOrgName:
+                                      '${type[0].toUpperCase()}${type.substring(1)}',
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                      )),
                 ],
               ),
             ),
@@ -414,103 +499,188 @@ class LoginFormState extends State<LoginForm> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Expanded(
+              child: LinearProgressIndicator(
+                value: 0.66, // Step 2 of 3
+                backgroundColor: Colors.grey[300],
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(Colors.redAccent),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (context) => const WelcomePage()),
+                (Route<dynamic> route) => false, // Clear the navigation stack
+              );
+            },
+            child: const Text('Skip',
+                style: TextStyle(color: Colors.black54, fontFamily: 'Gilroy')),
+          ),
+        ],
+      ),
       body: Stack(
         children: [
-          Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Image.asset('assets/images/logo.png', height: 70),
-                  const SizedBox(width: 10),
-                  const Text(
-                    'Emcall',
-                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+          SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(
+              vertical: 16,
+              horizontal: 16,
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const SizedBox(height: 40),
+                    Image.asset('assets/images/logo.png', height: 25),
+                    const SizedBox(width: 5),
+                    const Text('Emcall',
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.normal,
+                            color: Colors.black54)),
+                  ],
+                ),
+                const SizedBox(height: 60),
+                const Text('Kamusta,\nWelcome back!',
+                    style: TextStyle(fontSize: 35, fontFamily: 'Gilroy')),
+                const Text(
+                  'Please sign in to continue.',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.black54,
                   ),
-                  const SizedBox(height: 40),
-                  TextField(
-                    controller: usernameController,
-                    decoration: InputDecoration(
-                      labelText: 'Username',
-                      border: customInputBorder,
-                      enabledBorder: customInputBorder,
-                      focusedBorder: customInputBorder.copyWith(
-                        borderSide:
-                            const BorderSide(color: Colors.blue, width: 2.0),
-                      ),
+                ),
+                const SizedBox(height: 30),
+                TextField(
+                  cursorColor: Colors.redAccent,
+                  style: TextStyle(
+                    fontSize: 20,
+                    color: Colors.black,
+                  ),
+                  controller: usernameController,
+                  decoration: InputDecoration(
+                    labelText: 'Username',
+                    hintText: 'Enter your username',
+                    filled: true,
+                    fillColor: Colors.grey[100],
+                    labelStyle: TextStyle(
+                      color: Colors.black54,
+                      fontSize: 20,
                     ),
+                    prefixIcon: const Icon(Icons.person_rounded),
+                    border: customInputBorder,
+                    enabledBorder: customInputBorder,
+                    focusedBorder: customInputBorder.copyWith(
+                        borderSide: const BorderSide(
+                            color: Colors.redAccent, width: 1.0)),
                   ),
-                  const SizedBox(height: 20),
-                  PasswordField(
-                    customInputBorder: customInputBorder,
-                    controller: passwordController,
-                  ),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          PageRouteBuilder(
-                            pageBuilder:
-                                (context, animation, secondaryAnimation) =>
-                                    const ForgotPasswordPage(),
-                            transitionsBuilder: (context, animation,
-                                secondaryAnimation, child) {
-                              final slideTween = Tween<Offset>(
-                                begin: const Offset(1.0, 0.0),
-                                end: Offset.zero,
-                              ).chain(CurveTween(curve: Curves.easeInOut));
-                              final fadeTween =
-                                  Tween<double>(begin: 0.0, end: 1.0);
-                              return SlideTransition(
-                                position: animation.drive(slideTween),
-                                child: FadeTransition(
-                                  opacity: animation.drive(fadeTween),
-                                  child: child,
-                                ),
-                              );
-                            },
+                ),
+                const SizedBox(height: 20),
+                PasswordField(
+                  customInputBorder: customInputBorder,
+                  controller: passwordController,
+                ),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _rememberMe,
+                      activeColor: Colors.redAccent,
+                      onChanged: (value) =>
+                          setState(() => _rememberMe = value!),
+                    ),
+                    const Text(
+                      'Remember me',
+                      style: TextStyle(color: Colors.black, fontSize: 14),
+                    ),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              PageRouteBuilder(
+                                pageBuilder:
+                                    (context, animation, secondaryAnimation) =>
+                                        const ForgotPasswordPage(),
+                                transitionsBuilder: (context, animation,
+                                    secondaryAnimation, child) {
+                                  final slideTween = Tween<Offset>(
+                                          begin: const Offset(1.0, 0.0),
+                                          end: Offset.zero)
+                                      .chain(
+                                          CurveTween(curve: Curves.easeInOut));
+                                  final fadeTween =
+                                      Tween<double>(begin: 0.0, end: 1.0);
+                                  return SlideTransition(
+                                      position: animation.drive(slideTween),
+                                      child: FadeTransition(
+                                          opacity: animation.drive(fadeTween),
+                                          child: child));
+                                },
+                              ),
+                            );
+                          },
+                          label: const Text(
+                            'Forgot Password?',
+                            style:
+                                TextStyle(color: Colors.black54, fontSize: 14),
                           ),
-                        );
-                      },
-                      icon: const Icon(Icons.lock_outline),
-                      label: const Text('Forgot Password?'),
-                    ),
-                  ),
-                  const SizedBox(height: 40),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _isLoading ? null : _handleLogin,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16.0),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10.0),
-                          side:
-                              const BorderSide(color: Colors.blue, width: 1.5),
                         ),
                       ),
-                      child:
-                          const Text('Login', style: TextStyle(fontSize: 18)),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text("Don't have an account?"),
-                      TextButton(
-                        onPressed: () {
-                          _showAccountTypeBottomSheet(context);
-                        },
-                        child: const Text('Create an Account'),
+                  ],
+                ),
+                const SizedBox(height: 30),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _handleLogin,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 16.0),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.0),
                       ),
-                    ],
+                    ),
+                    child: const Text('Login',
+                        style: TextStyle(
+                          fontSize: 22,
+                          color: Colors.white,
+                        )),
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text("Don't have an account?"),
+                    TextButton(
+                      onPressed: () => _showAccountTypeBottomSheet(context),
+                      child: Text(
+                        'Create an Account',
+                        style: TextStyle(color: Colors.blue),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ],
@@ -522,11 +692,8 @@ class LoginFormState extends State<LoginForm> {
 class PasswordField extends StatefulWidget {
   final OutlineInputBorder customInputBorder;
   final TextEditingController? controller;
-  const PasswordField({
-    super.key,
-    required this.customInputBorder,
-    this.controller,
-  });
+  const PasswordField(
+      {super.key, required this.customInputBorder, this.controller});
 
   @override
   State<PasswordField> createState() => _PasswordFieldState();
@@ -538,25 +705,37 @@ class _PasswordFieldState extends State<PasswordField> {
   @override
   Widget build(BuildContext context) {
     return TextField(
+      cursorColor: Colors.redAccent,
+      style: TextStyle(
+        fontSize: 20,
+        color: Colors.black,
+      ),
       controller: widget.controller,
       obscureText: _obscureText,
       decoration: InputDecoration(
         labelText: 'Password',
+        hintText: 'Enter your password',
+        filled: true,
+        fillColor: Colors.grey[100],
+        labelStyle: TextStyle(
+          color: Colors.black54,
+          fontSize: 20,
+        ),
+        prefixIcon: const Icon(Icons.lock_rounded),
         border: widget.customInputBorder,
         enabledBorder: widget.customInputBorder,
         focusedBorder: widget.customInputBorder.copyWith(
-          borderSide: const BorderSide(color: Colors.blue, width: 2.0),
-        ),
+            borderSide: const BorderSide(color: Colors.redAccent, width: 1.0)),
         suffixIcon: IconButton(
           icon: Icon(
             _obscureText ? Icons.visibility_off : Icons.visibility,
-            color: Colors.blue,
+            color: Colors.grey,
           ),
-          onPressed: () {
-            setState(() => _obscureText = !_obscureText);
-          },
+          onPressed: () => setState(() => _obscureText = !_obscureText),
         ),
       ),
     );
   }
 }
+
+const customRadius = Radius.circular(20.0);

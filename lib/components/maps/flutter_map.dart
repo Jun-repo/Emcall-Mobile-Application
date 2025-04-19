@@ -1,9 +1,8 @@
-// ignore_for_file: use_build_context_synchronously, unused_element
+// ignore_for_file: use_build_context_synchronously, unused_element, library_private_types_in_public_api, deprecated_member_use
 
 import 'dart:async';
 import 'dart:convert';
-// ignore: unnecessary_import
-import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart' as gl;
 import 'package:http/http.dart' as http;
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mp;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class FullMap extends StatefulWidget {
   const FullMap({super.key});
@@ -20,12 +20,156 @@ class FullMap extends StatefulWidget {
   State<FullMap> createState() => _FullMapState();
 }
 
+class EmergencyOrganization {
+  final int id;
+  final String name;
+  final String serviceType;
+  final String profileImageUrl;
+
+  EmergencyOrganization({
+    required this.id,
+    required this.name,
+    required this.serviceType,
+    required this.profileImageUrl,
+  });
+}
+
+class EmergencyOrganizationsBottomSheet extends StatefulWidget {
+  const EmergencyOrganizationsBottomSheet({super.key});
+
+  @override
+  _EmergencyOrganizationsBottomSheetState createState() =>
+      _EmergencyOrganizationsBottomSheetState();
+}
+
+class _EmergencyOrganizationsBottomSheetState
+    extends State<EmergencyOrganizationsBottomSheet> {
+  late Future<Map<String, List<EmergencyOrganization>>> _futureGroupedOrgs;
+
+  @override
+  void initState() {
+    super.initState();
+    _futureGroupedOrgs = _fetchEmergencyOrganizations();
+  }
+
+  Future<Map<String, List<EmergencyOrganization>>>
+      _fetchEmergencyOrganizations() async {
+    const serviceTypes = [
+      'police',
+      'rescue',
+      'firefighter',
+      'disaster_responder'
+    ];
+    final futures = serviceTypes
+        .map((type) => _fetchOrganizationsWithWorkers(type))
+        .toList();
+    final results = await Future.wait(futures);
+    final allOrgs = results.expand((x) => x).toList();
+    final groupedOrgs = <String, List<EmergencyOrganization>>{};
+    for (var org in allOrgs) {
+      groupedOrgs.putIfAbsent(org.serviceType, () => []).add(org);
+    }
+    return groupedOrgs;
+  }
+
+  Future<List<EmergencyOrganization>> _fetchOrganizationsWithWorkers(
+      String serviceType) async {
+    final orgsResponse = await Supabase.instance.client
+        .from(serviceType == 'disaster_responder'
+            ? 'disaster_responders'
+            : serviceType)
+        .select('id, public_org_name');
+    final orgs = orgsResponse as List<dynamic>;
+    final emergencyOrgs = <EmergencyOrganization>[];
+
+    for (var org in orgs) {
+      final workersResponse = await Supabase.instance.client
+          .from('workers')
+          .select('profile_image')
+          .eq('organization_type', serviceType)
+          .eq('organization_id', org['id'])
+          .limit(1);
+      String profileImageUrl = workersResponse.isNotEmpty &&
+              workersResponse[0]['profile_image'] != null
+          ? workersResponse[0]['profile_image']
+          : '';
+      emergencyOrgs.add(EmergencyOrganization(
+        id: org['id'],
+        name: org['public_org_name'],
+        serviceType: serviceType,
+        profileImageUrl: profileImageUrl,
+      ));
+    }
+    return emergencyOrgs;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      child: FutureBuilder<Map<String, List<EmergencyOrganization>>>(
+        future: _futureGroupedOrgs,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          } else if (snapshot.hasError) {
+            return const Center(child: Text('Error fetching organizations'));
+          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return const Center(child: Text('No organizations found'));
+          } else {
+            final groupedOrgs = snapshot.data!;
+            return ListView(
+              children: groupedOrgs.entries.map((entry) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(entry.key.toUpperCase(),
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 80,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: entry.value.length,
+                        itemBuilder: (context, index) {
+                          final org = entry.value[index];
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8.0),
+                            child: CircleAvatar(
+                              radius: 30,
+                              backgroundImage: org.profileImageUrl.isNotEmpty
+                                  ? NetworkImage(org.profileImageUrl)
+                                  : null,
+                              child: org.profileImageUrl.isEmpty
+                                  ? const Icon(Icons.business)
+                                  : null,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                );
+              }).toList(),
+            );
+          }
+        },
+      ),
+    );
+  }
+}
+
 class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
   mp.MapboxMap? mapboxMap;
   mp.PointAnnotationManager? pointAnnotationManager;
   mp.PolylineAnnotationManager? polylineAnnotationManager;
   Uint8List? hqMarkerImage;
   StreamSubscription<gl.Position>? usersPositionStream;
+  String? destinationRegionName;
+  String? destinationRoadName;
+  bool _isInitialGeocodingDone = false;
 
   mp.Position? userPosition;
   mp.Position? destinationPosition;
@@ -37,34 +181,31 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
   bool _hasAnimatedRoute = false;
   bool _routeConfirmed = false;
   bool isNavigationActive = false;
+  bool _isLoadingRoute = false;
 
   double? userBearing;
   Uint8List? userLocationImage;
   bool isPitchEnabled = false;
   bool _isNavigationPuckActive = false;
 
-  // Route metrics
   String startLocationName = 'Your Location';
   String endLocationName = 'Destination';
   double? routeDistance;
   double? routeDuration;
   double? averageSpeed;
 
-  // Route configuration
   String selectedProfile = 'driving-car';
   final Map<String, IconData> routeProfiles = {
     'driving-car': Icons.local_taxi,
     'cycling-regular': Icons.pedal_bike,
     'foot-walking': Icons.hiking,
   };
-
   final Map<String, Color> routeColors = {
     'driving-car': Colors.indigo,
     'cycling-regular': Colors.teal,
     'foot-walking': Colors.deepOrange,
   };
 
-  // API configuration
   static const String orsBaseUrl =
       'https://api.openrouteservice.org/v2/directions';
   static const String orsApiKey =
@@ -81,39 +222,47 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
   bool showNavigationInfoPanel = false;
   bool _showBubble = false;
 
+  Timer? _positionUpdateTimer;
+  mp.ScreenCoordinate? _currentBubblePosition;
+
   @override
   void initState() {
     super.initState();
     _requestLocationPermission();
 
-    // Initialize vertical bounce animation controller (for up/down movement)
     _bounceController = AnimationController(
-      duration: const Duration(milliseconds: 1000),
-      vsync: this,
-    )..repeat(reverse: true);
-
+        duration: const Duration(milliseconds: 1000), vsync: this)
+      ..repeat(reverse: true);
     _bounceAnimation = Tween<double>(begin: 0, end: 10).animate(
-      CurvedAnimation(parent: _bounceController!, curve: Curves.easeInOut),
-    );
+        CurvedAnimation(parent: _bounceController!, curve: Curves.easeInOut));
 
-    // Initialize bubble scale animation controller (for bouncing in/out effect)
     _bubbleScaleController = AnimationController(
-      duration: const Duration(milliseconds: 400),
-      vsync: this,
-    );
-
+        duration: const Duration(milliseconds: 500), vsync: this);
     _bubbleScaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _bubbleScaleController!,
-        curve: Curves.fastEaseInToSlowEaseOut,
-      ),
-    );
+        CurvedAnimation(
+            parent: _bubbleScaleController!, curve: Curves.easeInOut));
+
+    _positionUpdateTimer =
+        Timer.periodic(const Duration(milliseconds: 10), (timer) {
+      if (_showBubble && destinationPosition != null && mapboxMap != null) {
+        _updateBubblePosition();
+      }
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    precacheImage(const AssetImage('assets/icons/aim_enabled.png'), context);
+    precacheImage(const AssetImage('assets/icons/aim_disabled.png'), context);
+    precacheImage(const AssetImage('assets/icons/north_arrow.png'), context);
   }
 
   @override
   void dispose() {
     _bounceController?.dispose();
     _bubbleScaleController?.dispose();
+    _positionUpdateTimer?.cancel();
     usersPositionStream?.cancel();
     controller?.dispose();
     super.dispose();
@@ -123,77 +272,13 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
+        alignment: Alignment.center,
         children: [
-          mp.MapWidget(
-            key: const ValueKey("mapWidget"),
-            styleUri: "mapbox://styles/buddyapp01/cm8qqmuxt00eo01sr3zd0apes",
-            onMapCreated: _onMapCreated,
-            onLongTapListener: (event) => _handleLongTap(event.point),
-            gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
-              Factory<PanGestureRecognizer>(() => PanGestureRecognizer()),
-              Factory<ScaleGestureRecognizer>(() => ScaleGestureRecognizer()),
-            },
-          ),
+          _buildMapWidget(),
           if (_showBubble && destinationPosition != null)
             _buildBouncingMarkerWithBubble(),
-          Positioned(
-            top: isNavigationActive ? 300 : 40,
-            right: 20,
-            child: Column(
-              children: [
-                FloatingActionButton(
-                  mini: true,
-                  onPressed: hasDestination ? null : _toggleFollowUser,
-                  backgroundColor: Colors.white,
-                  child: Icon(
-                    isFollowingUser
-                        ? Icons.navigation
-                        : Icons.navigation_outlined,
-                    color: hasDestination ? Colors.grey : Colors.red,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                FloatingActionButton(
-                  mini: true,
-                  onPressed: _togglePitch,
-                  backgroundColor: Colors.white,
-                  child: Icon(
-                    isPitchEnabled ? Icons.architecture : Icons.terrain,
-                    color: Colors.red,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.3),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.grey,
-                      width: 1.0,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    children: [
-                      FloatingActionButton(
-                        mini: true,
-                        onPressed: _zoomIn,
-                        backgroundColor: Colors.white.withOpacity(0.0),
-                        child: const Icon(Icons.add_rounded, color: Colors.red),
-                      ),
-                      FloatingActionButton(
-                        mini: true,
-                        onPressed: _zoomOut,
-                        backgroundColor: Colors.white.withOpacity(0.0),
-                        child:
-                            const Icon(Icons.remove_rounded, color: Colors.red),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _buildFollowUserButton(),
+          _buildMapControls(),
           if (showRoutePanel) _buildInfoPanel(),
           if (showNavigationInfoPanel) _buildNavigationInfoPanel(),
         ],
@@ -201,116 +286,398 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     );
   }
 
+// Helper method for Map Widget
+  Widget _buildMapWidget() {
+    return mp.MapWidget(
+      key: const ValueKey("mapWidget"),
+      styleUri: "mapbox://styles/buddyapp01/cm988908900g601pg0tyd9tjj",
+      onMapCreated: _onMapCreated,
+      onLongTapListener: (event) => _handleLongTap(event.point),
+      onTapListener: (event) => _handleTap(event.point),
+      gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+        Factory<PanGestureRecognizer>(() => PanGestureRecognizer()),
+        Factory<ScaleGestureRecognizer>(() => ScaleGestureRecognizer()),
+        Factory<LongPressGestureRecognizer>(
+          () => LongPressGestureRecognizer(
+            duration: const Duration(milliseconds: 100),
+          ),
+        ),
+      },
+    );
+  }
+
+// Helper method for Follow User Button
+  Widget _buildFollowUserButton() {
+    return Positioned(
+      bottom: 20,
+      left: 20,
+      child: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withOpacity(0.9),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.4),
+              blurRadius: 4,
+              offset: const Offset(4, 6),
+            ),
+          ],
+        ),
+        child: IconButton(
+          icon: Image.asset(
+            isFollowingUser
+                ? 'assets/icons/aim_enabled.png'
+                : 'assets/icons/aim_disable.png',
+            width: 50,
+            height: 50,
+            errorBuilder: (context, error, stackTrace) =>
+                const Icon(Icons.error),
+          ),
+          onPressed: hasDestination ? null : _toggleFollowUser,
+        ),
+      ),
+    );
+  }
+
+// Helper method for Map Controls (Pitch, Compass, Zoom)
+  // Helper method for Map Controls (Pitch, Compass, Zoom)
+  Widget _buildMapControls() {
+    return Positioned(
+      bottom: 20,
+      right: 20,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Pitch Toggle
+          Container(
+            margin: const EdgeInsets.only(bottom: 8.0),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withOpacity(0.9),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.4),
+                  blurRadius: 4,
+                  offset: const Offset(4, 6),
+                ),
+              ],
+            ),
+            child: TextButton(
+              onPressed: _togglePitch,
+              child: Text(
+                isPitchEnabled ? '3D' : '2D',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          // Compass
+          Container(
+            margin: const EdgeInsets.only(bottom: 8.0),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withOpacity(0.9),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.4),
+                  blurRadius: 4,
+                  offset: const Offset(4, 6),
+                ),
+              ],
+            ),
+            child: GestureDetector(
+              onTap: () {
+                mapboxMap?.easeTo(
+                  mp.CameraOptions(bearing: 0),
+                  mp.MapAnimationOptions(duration: 1000),
+                );
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Image.asset(
+                  'assets/icons/north_arrow.png',
+                  width: 35,
+                  height: 35,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const Icon(Icons.compass_calibration),
+                ),
+              ),
+            ),
+          ),
+          // Zoom Controls
+          Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12.0),
+              color: Colors.white,
+              border: Border.all(
+                color: Colors.black38,
+                width: 3.0,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.withOpacity(0.5),
+                  spreadRadius: 2,
+                  blurRadius: 5,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(
+                    Icons.add_rounded,
+                    color: Color.fromARGB(255, 20, 20, 20),
+                  ),
+                  onPressed: _zoomIn,
+                ),
+                IconButton(
+                  icon: const Icon(
+                    Icons.remove_rounded,
+                    color: Color.fromARGB(255, 20, 20, 20),
+                  ),
+                  onPressed: _zoomOut,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updateBubblePosition() async {
+    if (mapboxMap == null || destinationPosition == null) return;
+    final screenPos = await mapboxMap!
+        .pixelForCoordinate(mp.Point(coordinates: destinationPosition!));
+    setState(() => _currentBubblePosition = screenPos);
+  }
+
+  void _showEmergencyOrganizations() {
+    showModalBottomSheet(
+        context: context,
+        builder: (context) => const EmergencyOrganizationsBottomSheet());
+  }
+
+  void _showOptionsBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (BuildContext context) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.preview, color: Colors.redAccent),
+                title: const Text('Preview Location',
+                    style: TextStyle(fontSize: 16)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _previewLocation();
+                },
+              ),
+              ListTile(
+                leading:
+                    const Icon(Icons.report_problem, color: Colors.redAccent),
+                title: const Text('Mark as your Concern Citizen spot',
+                    style: TextStyle(fontSize: 16)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _markAsConcernSpot();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _previewLocation() {
+    if (destinationPosition != null) {
+      mapboxMap?.flyTo(
+        mp.CameraOptions(
+            center: mp.Point(coordinates: destinationPosition!),
+            zoom: 14,
+            pitch: 45.0),
+        mp.MapAnimationOptions(duration: 1000, startDelay: 0),
+      );
+    }
+  }
+
+  void _markAsConcernSpot() {
+    if (kDebugMode) print('Marked as Concern Citizen spot: $endLocationName');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Marked "$endLocationName" as a Concern Citizen spot')));
+  }
+
   Widget _buildBouncingMarkerWithBubble() {
     return FutureBuilder<mp.ScreenCoordinate>(
-      future: mapboxMap?.pixelForCoordinate(
-        mp.Point(coordinates: destinationPosition!),
-      ),
+      future: mapboxMap
+          ?.pixelForCoordinate(mp.Point(coordinates: destinationPosition!)),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox.shrink();
-
-        final screenPos = snapshot.data!;
+        if (_currentBubblePosition == null) return const SizedBox.shrink();
+        final screenPos = _currentBubblePosition!;
         return Positioned(
-          left: screenPos.x - 90, // Adjusted for larger container with buttons
-          top: screenPos.y - 110, // Adjusted for larger container
+          left: screenPos.x - 130, // Center the bubble horizontally
+          top: screenPos.y - 240, // Adjusted to account for tail height
           child: AnimatedBuilder(
             animation: _bounceAnimation!,
             builder: (context, child) {
               return Transform.translate(
                 offset: Offset(0, -_bounceAnimation!.value),
-                child: Stack(
-                  alignment: Alignment.center,
+                child: Column(
                   children: [
-                    ScaleTransition(
-                      scale: _bubbleScaleAnimation!,
-                      child: Container(
-                        padding: const EdgeInsets.all(
-                            16), // Adjusted padding for larger content
-                        margin: const EdgeInsets.only(bottom: 35),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Colors.black26,
-                              blurRadius: 4,
-                              offset: Offset(0, 2),
+                    Stack(
+                      children: [
+                        ScaleTransition(
+                          scale: _bubbleScaleAnimation!,
+                          child: Container(
+                            width: 260,
+                            padding: const EdgeInsets.all(24),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: const [
+                                BoxShadow(
+                                    color: Colors.black26,
+                                    blurRadius: 4,
+                                    offset: Offset(0, 2))
+                              ],
                             ),
-                          ],
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              "Destination",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(
-                                height: 12), // Space between text and buttons
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                ElevatedButton(
-                                  onPressed: _cancelRoute,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors
-                                        .grey[300], // Light grey background
-                                    foregroundColor:
-                                        Colors.grey[800], // Dark grey text/icon
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 16, vertical: 8),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      side:
-                                          const BorderSide(color: Colors.grey),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    "Cancel",
-                                    style: TextStyle(fontSize: 14),
+                                const SizedBox(height: 8),
+                                Center(
+                                  child: Text(
+                                    destinationRegionName ?? 'Unknown Region',
+                                    style: const TextStyle(
+                                        fontSize: 22,
+                                        color: Colors.black87,
+                                        fontFamily: 'Gilroy'),
+                                    textAlign: TextAlign.center,
                                   ),
                                 ),
-                                const SizedBox(
-                                    width: 10), // Space between buttons
-                                ElevatedButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      _routeConfirmed = true;
-                                      _showBubble = false;
-                                    });
-                                    _getRouteCoordinates();
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        Colors.red[400], // Red background
-                                    foregroundColor:
-                                        Colors.white, // White text/icon
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 16, vertical: 8),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      side: const BorderSide(color: Colors.red),
+                                const SizedBox(height: 4),
+                                Center(
+                                  child: Text(
+                                    destinationRoadName ?? 'Unamed Road',
+                                    style: const TextStyle(
+                                        fontSize: 18,
+                                        color: Colors.grey,
+                                        fontFamily: 'Gilroy',
+                                        fontWeight: FontWeight.w200),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Divider(color: Colors.grey[300], thickness: 1),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Expanded(
+                                      child: ElevatedButton(
+                                        onPressed: _showEmergencyOrganizations,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.blue[300],
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 18, vertical: 10),
+                                          shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(46),
+                                              side: const BorderSide(
+                                                  color: Colors.blue)),
+                                        ),
+                                        child: const Text("Share",
+                                            style: TextStyle(
+                                                fontSize: 18,
+                                                fontFamily: 'Gilroy')),
+                                      ),
                                     ),
-                                  ),
-                                  child: const Text(
-                                    "Routes",
-                                    style: TextStyle(fontSize: 14),
-                                  ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: ElevatedButton(
+                                        onPressed: () async {
+                                          _bubbleScaleController
+                                              ?.reverse()
+                                              .then((_) {
+                                            setState(() {
+                                              _routeConfirmed = true;
+                                              _showBubble = false;
+                                              showRoutePanel = true;
+                                            });
+                                            _getRouteCoordinates().then(
+                                                (_) => _adjustMapUpward());
+                                          });
+
+                                          await _getRouteCoordinates();
+                                          _adjustMapUpward();
+                                        },
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.redAccent,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 18, vertical: 10),
+                                          shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(46),
+                                              side: const BorderSide(
+                                                  color: Color.fromARGB(
+                                                      255, 167, 11, 0))),
+                                        ),
+                                        child: const Text("Routes",
+                                            style: TextStyle(
+                                                fontSize: 18,
+                                                fontFamily: 'Gilroy')),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
-                          ],
+                          ),
                         ),
-                      ),
+                        // 3-Dots Icon Button positioned at the top-right of the bubble
+                        Positioned(
+                          right: 10,
+                          top: 10,
+                          child: ScaleTransition(
+                            scale: _bubbleScaleAnimation!,
+                            child: CircleAvatar(
+                              radius: 24,
+                              backgroundColor: Colors.grey[200],
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.more_horiz_rounded,
+                                    size: 35),
+                                color: Colors.grey[800],
+                                onPressed: () => _showBubbleOptions(context),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
+                    // Tail below the bubble
                     Positioned(
-                      bottom: -15,
-                      child: CustomPaint(
-                        size: const Size(30, 45),
-                        painter: BubbleTailPainter(),
+                      bottom: 16,
+                      child: ScaleTransition(
+                        scale: _bubbleScaleAnimation!,
+                        child: CustomPaint(
+                          painter: BubbleTailPainter(),
+                          size: const Size(40, 30),
+                        ),
                       ),
                     ),
                   ],
@@ -323,78 +690,155 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     );
   }
 
+  void _showBubbleOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (BuildContext context) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.preview, color: Colors.redAccent),
+                title: const Text('Preview Location',
+                    style: TextStyle(fontSize: 16)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _previewBubbleLocation();
+                },
+              ),
+              ListTile(
+                leading:
+                    const Icon(Icons.report_problem, color: Colors.redAccent),
+                title:
+                    const Text('Report Issue', style: TextStyle(fontSize: 16)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _reportBubbleIssue();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _previewBubbleLocation() {
+    if (destinationPosition != null) {
+      mapboxMap?.flyTo(
+        mp.CameraOptions(
+            center: mp.Point(coordinates: destinationPosition!),
+            zoom: 14,
+            pitch: 45.0),
+        mp.MapAnimationOptions(duration: 1000, startDelay: 0),
+      );
+    }
+  }
+
+  void _reportBubbleIssue() {
+    if (kDebugMode) print('Reported issue at: $endLocationName');
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reported issue at "$endLocationName"')));
+  }
+
   Widget _buildInfoPanel() {
     return Positioned(
       bottom: 20,
       left: 20,
       right: 20,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: const [
-            BoxShadow(color: Colors.black12, blurRadius: 10),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildLocationRow(Icons.my_location, startLocationName),
-            const SizedBox(height: 8),
-            _buildLocationRow(Icons.flag, endLocationName),
-            if (routeDistance != null) ...[
-              const Divider(),
-              _buildMetricRow('Distance',
-                  '${(routeDistance! / 1000).toStringAsFixed(1)} km'),
-              _buildMetricRow('Duration',
-                  '${(routeDuration! / 60).toStringAsFixed(0)} mins'),
-              _buildMetricRow(
-                  'Speed', '${averageSpeed?.toStringAsFixed(1) ?? '--'} km/h'),
-            ],
-            const SizedBox(height: 12),
-            Row(
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.9),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: const [
+                BoxShadow(color: Colors.black12, blurRadius: 10)
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _startNavigation,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        side: const BorderSide(
-                            color: Colors.redAccent, width: 1.0),
-                      ),
-                    ),
-                    child: const Text(
-                      'Navigation',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
+                _buildLocationRow(Icons.my_location, startLocationName),
+                const SizedBox(height: 8),
+                _buildLocationRow(Icons.flag, endLocationName),
+                if (routeDistance != null) ...[
+                  const Divider(),
+                  _buildMetricRow('Distance',
+                      '${(routeDistance! / 1000).toStringAsFixed(1)} km'),
+                  _buildMetricRow('Duration',
+                      '${(routeDuration! / 60).toStringAsFixed(0)} mins'),
+                ],
+                const SizedBox(height: 12),
+                const Text('Choose Navigation Mode:',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: routeProfiles.entries.map((entry) {
+                    return IconButton(
+                      icon: Icon(entry.value),
+                      color: selectedProfile == entry.key
+                          ? routeColors[entry.key]
+                          : Colors.grey,
+                      onPressed: () => _updateRouteProfile(entry.key),
+                    );
+                  }).toList(),
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _cancelRoute,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _cancelRoute,
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8))),
+                        child: const Text("Cancel",
+                            style: TextStyle(fontSize: 14)),
                       ),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
                     ),
-                    child: const Text(
-                      "Cancel",
-                      style: TextStyle(fontSize: 14),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _startNavigation,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red[400],
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text("Navigate",
+                            style: TextStyle(fontSize: 14)),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+          Visibility(
+            visible: _isLoadingRoute,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(12)),
+              child: const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.redAccent),
+                  strokeWidth: 8.0),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -416,7 +860,7 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(label, style: TextStyle(color: Colors.grey[600])),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.bold))
         ],
       ),
     );
@@ -429,33 +873,27 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
   }
 
   void handleMapInteraction() {
-    if (isFollowingUser) {
-      setState(() => isFollowingUser = false);
-    }
+    if (isFollowingUser) setState(() => isFollowingUser = false);
   }
 
   Future<void> _initializeMap(mp.MapboxMap controller) async {
     await controller.location.updateSettings(
       mp.LocationComponentSettings(
-        enabled: true,
-        pulsingEnabled: true,
-        pulsingColor: Colors.red.value,
-        puckBearingEnabled: true,
-        puckBearing: mp.PuckBearing.COURSE,
-      ),
+          enabled: true,
+          pulsingEnabled: true,
+          pulsingColor: Colors.blueAccent.value,
+          puckBearingEnabled: true,
+          puckBearing: mp.PuckBearing.COURSE),
     );
 
     hqMarkerImage ??= await _loadHQMarkerImage();
-
     pointAnnotationManager =
         await controller.annotations.createPointAnnotationManager();
     polylineAnnotationManager =
         await controller.annotations.createPolylineAnnotationManager();
 
-    await controller.style.addSource(
-      mp.GeoJsonSource(id: "source", lineMetrics: true),
-    );
-
+    await controller.style
+        .addSource(mp.GeoJsonSource(id: "source", lineMetrics: true));
     await controller.style.addLayer(
       mp.LineLayer(
         id: "layer",
@@ -472,57 +910,124 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     );
 
     controller.flyTo(
-      mp.CameraOptions(zoom: 10, pitch: 0, bearing: 0),
-      mp.MapAnimationOptions(duration: 2000, startDelay: 0),
-    );
+        mp.CameraOptions(
+          zoom: 10.clamp(10.0, 16.0).toDouble(),
+          pitch: 0,
+          bearing: 0,
+        ),
+        mp.MapAnimationOptions(duration: 2000, startDelay: 0));
   }
 
   void _handleLongTap(mp.Point point) async {
     if (hqMarkerImage == null) return;
+
+    await _reverseGeocode(point.coordinates, false);
 
     setState(() {
       destinationPosition = point.coordinates;
       hasDestination = true;
       isFollowingUser = false;
       endLocationName = 'Destination';
-      _routeConfirmed = true;
+      _routeConfirmed = false;
       _showBubble = true;
+      routeCoordinates.clear();
+      showRoutePanel = false;
     });
 
-    // Reset and start the bubble scale animation
-    _bubbleScaleController?.reset();
-    _bubbleScaleController?.forward();
-
     pointAnnotationManager?.deleteAll();
-    pointAnnotationManager?.create(
-      mp.PointAnnotationOptions(
-        image: hqMarkerImage,
-        iconSize: 0.2,
-        geometry: point,
-      ),
+    pointAnnotationManager?.create(mp.PointAnnotationOptions(
+        image: hqMarkerImage, iconSize: 1.0, geometry: point));
+
+    mapboxMap?.flyTo(
+      mp.CameraOptions(
+          bearing: 0,
+          center: mp.Point(coordinates: point.coordinates),
+          zoom: 16.clamp(10.0, 16.0).toDouble(),
+          pitch: 45.0),
+      mp.MapAnimationOptions(duration: 1000, startDelay: 0),
     );
 
-    await _getRouteCoordinates();
+    await _updateBubblePosition();
+    _bubbleScaleController?.reset();
+    _bubbleScaleController?.forward();
+  }
+
+  void _handleTap(mp.Point point) {
+    _bubbleScaleController?.reverse().then((_) {
+      setState(() {
+        _showBubble = false;
+        hasDestination = false;
+        destinationPosition = null;
+        routeCoordinates.clear();
+        showRoutePanel = false;
+        pointAnnotationManager?.deleteAll();
+      });
+    });
+  }
+
+  void _adjustMapUpward() async {
+    if (mapboxMap == null ||
+        userPosition == null ||
+        destinationPosition == null) return;
+
+    const double navigationPanelHeight = 150.0;
+    final screenHeight = MediaQuery.of(context).size.height;
+    const topPadding = navigationPanelHeight + 20;
+
+    final coordinates = [
+      mp.Point(coordinates: userPosition!),
+      mp.Point(coordinates: destinationPosition!),
+    ];
+
+    final camera = await mapboxMap!.cameraForCoordinates(
+      coordinates,
+      mp.MbxEdgeInsets(
+          top: topPadding, left: 50.0, bottom: screenHeight / 2, right: 50.0),
+      null,
+      45.0,
+    );
+
+    double newZoom = routeDistance != null
+        ? (routeDistance! < 1000
+            ? 15.0
+            : routeDistance! < 5000
+                ? 13.0
+                : routeDistance! < 10000
+                    ? 11.0
+                    : routeDistance! < 50000
+                        ? 9.0
+                        : 7.0)
+        : 14.0;
+
+    mapboxMap!.flyTo(
+      mp.CameraOptions(
+        center: camera.center,
+        zoom: newZoom.clamp(10.0, 16.0).toDouble(),
+        pitch: 45.0,
+        bearing: isNavigationActive ? camera.bearing ?? 0 : 0,
+        padding: mp.MbxEdgeInsets(
+            top: topPadding, left: 50.0, bottom: screenHeight / 2, right: 50.0),
+      ),
+      mp.MapAnimationOptions(duration: 1000, startDelay: 0),
+    );
   }
 
   Future<bool> _getRouteCoordinates({bool useDialogError = false}) async {
     if (!(hasDestination && _routeConfirmed) ||
         userPosition == null ||
-        destinationPosition == null) {
-      return false;
-    }
+        destinationPosition == null) return false;
 
+    setState(() => _isLoadingRoute = true);
     final start = "${userPosition!.lng},${userPosition!.lat}";
     final end = "${destinationPosition!.lng},${destinationPosition!.lat}";
 
     try {
       final response = await http.get(
-        Uri.parse('$orsBaseUrl/$selectedProfile?start=$start&end=$end'),
-        headers: {
-          'Authorization': 'Bearer $orsApiKey',
-          'Accept': 'application/json, application/geo+json',
-        },
-      ).timeout(const Duration(seconds: 10));
+          Uri.parse('$orsBaseUrl/$selectedProfile?start=$start&end=$end'),
+          headers: {
+            'Authorization': 'Bearer $orsApiKey',
+            'Accept': 'application/json, application/geo+json'
+          }).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -532,16 +1037,14 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
         final summary = properties['summary'];
 
         setState(() {
-          routeCoordinates = coordinates.map<mp.Position>((coord) {
-            return mp.Position(
-              (coord[0] as num).toDouble(),
-              (coord[1] as num).toDouble(),
-            );
-          }).toList();
+          routeCoordinates = coordinates
+              .map<mp.Position>((coord) => mp.Position(
+                  (coord[0] as num).toDouble(), (coord[1] as num).toDouble()))
+              .toList();
           routeDistance = summary['distance'];
           routeDuration = summary['duration'];
           averageSpeed = (routeDistance! / routeDuration!) * 3.6;
-          showRoutePanel = true;
+          _isLoadingRoute = false;
         });
 
         _reverseGeocode(userPosition!, true);
@@ -550,10 +1053,10 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
         return true;
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('Route calculation error: $e');
-      }
+      if (kDebugMode) print('Route calculation error: $e');
     }
+
+    setState(() => _isLoadingRoute = false);
     return false;
   }
 
@@ -561,33 +1064,23 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     final source = await mapboxMap?.style.getSource("source");
     if (routeCoordinates.isEmpty) {
       if (source is mp.GeoJsonSource) {
-        source.updateGeoJSON(json.encode({
-          "type": "FeatureCollection",
-          "features": [],
-        }));
+        source.updateGeoJSON(
+            json.encode({"type": "FeatureCollection", "features": []}));
       }
       return;
     }
     final line = mp.LineString(coordinates: routeCoordinates);
-    if (source is mp.GeoJsonSource) {
-      source.updateGeoJSON(json.encode(line));
-    }
+    if (source is mp.GeoJsonSource) source.updateGeoJSON(json.encode(line));
 
     if (!_hasAnimatedRoute) {
       controller?.stop();
       controller?.dispose();
       controller = AnimationController(
-        duration: const Duration(seconds: 2),
-        vsync: this,
-      );
+          duration: const Duration(seconds: 2), vsync: this);
       animation = Tween<double>(begin: 0, end: 1.0).animate(controller!)
-        ..addListener(() {
-          mapboxMap?.style.setStyleLayerProperty(
-              "layer", "line-trim-offset", [animation?.value, 1.0]);
-        });
-      controller?.forward().whenComplete(() {
-        _hasAnimatedRoute = true;
-      });
+        ..addListener(() => mapboxMap?.style.setStyleLayerProperty(
+            "layer", "line-trim-offset", [animation?.value, 1.0]));
+      controller?.forward().whenComplete(() => _hasAnimatedRoute = true);
     } else {
       mapboxMap?.style
           .setStyleLayerProperty("layer", "line-trim-offset", [1.0, 1.0]);
@@ -610,12 +1103,7 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
           .setStyleLayerProperty("layer", "line-border-color", colorHex);
     }
 
-    if (hasDestination) {
-      setState(() {
-        _routeConfirmed = true;
-      });
-      await _getRouteCoordinates();
-    }
+    if (hasDestination && _routeConfirmed) await _getRouteCoordinates();
   }
 
   void _toggleFollowUser() {
@@ -624,35 +1112,31 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     if (isFollowingUser && userPosition != null) {
       _activeCameraOnUser(bearing: userBearing);
       mapboxMap?.easeTo(
-        mp.CameraOptions(
-          center: mp.Point(coordinates: userPosition!),
-          bearing: userBearing,
-          zoom: 17.5,
-        ),
-        mp.MapAnimationOptions(duration: 2000, startDelay: 0),
-      );
+          mp.CameraOptions(
+            center: mp.Point(coordinates: userPosition!),
+            bearing: 0,
+            zoom: 16.clamp(10.0, 16.0).toDouble(),
+          ),
+          mp.MapAnimationOptions(duration: 2000, startDelay: 0));
     }
   }
 
   void _activeCameraOnUser({double? bearing, bool useBottomCenter = false}) {
     if (userPosition == null) return;
-    if (_isNavigationPuckActive) {
-      _changeLocationPuckToNavigation();
-    }
+    if (_isNavigationPuckActive) _changeLocationPuckToNavigation();
     final anchor = useBottomCenter
         ? mp.ScreenCoordinate(
             x: MediaQuery.of(context).size.width / 2,
-            y: MediaQuery.of(context).size.height * 0.9,
-          )
+            y: MediaQuery.of(context).size.height * 0.9)
         : mp.ScreenCoordinate(x: 1, y: 1);
     mapboxMap?.flyTo(
       mp.CameraOptions(
         center: mp.Point(coordinates: userPosition!),
-        bearing: bearing,
+        bearing: isNavigationActive ? bearing ?? 0 : 0,
         pitch: isPitchEnabled ? 50.0 : 0.0,
         padding: mp.MbxEdgeInsets(top: 400, left: 2, bottom: 4, right: 2),
         anchor: anchor,
-        zoom: 17.5,
+        zoom: 16.clamp(10.0, 16.0).toDouble(),
       ),
       mp.MapAnimationOptions(duration: 2000, startDelay: 0),
     );
@@ -663,17 +1147,16 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     final anchor = useBottomCenter
         ? mp.ScreenCoordinate(
             x: MediaQuery.of(context).size.width / 2,
-            y: MediaQuery.of(context).size.height * 0.9,
-          )
+            y: MediaQuery.of(context).size.height * 0.9)
         : mp.ScreenCoordinate(x: 1, y: 1);
     mapboxMap?.flyTo(
       mp.CameraOptions(
         center: mp.Point(coordinates: userPosition!),
-        bearing: bearing,
+        bearing: isNavigationActive ? bearing ?? 0 : 0,
         pitch: isPitchEnabled ? 75.0 : 0.0,
         padding: mp.MbxEdgeInsets(top: 4, left: 2, bottom: 4, right: 2),
         anchor: anchor,
-        zoom: 18,
+        zoom: 16,
       ),
       mp.MapAnimationOptions(duration: 2000, startDelay: 0),
     );
@@ -696,13 +1179,10 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
 
   void _startLocationTracking() {
     const locationSettings = gl.LocationSettings(
-      accuracy: gl.LocationAccuracy.bestForNavigation,
-      distanceFilter: 0,
-    );
-
+        accuracy: gl.LocationAccuracy.bestForNavigation, distanceFilter: 0);
     usersPositionStream =
         gl.Geolocator.getPositionStream(locationSettings: locationSettings)
-            .listen((gl.Position position) {
+            .listen((gl.Position position) async {
       final newPosition = mp.Position(position.longitude, position.latitude);
       double routeBearing = _calculateRouteBearing(newPosition);
 
@@ -710,6 +1190,11 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
         userPosition = newPosition;
         userBearing = routeBearing;
       });
+
+      if (!_isInitialGeocodingDone && userPosition != null) {
+        await _reverseGeocode(userPosition!, false);
+        setState(() => _isInitialGeocodingDone = true);
+      }
 
       if (!_isCameraCentered && userPosition != null) {
         _centerCameraOnUser(bearing: routeBearing);
@@ -719,10 +1204,7 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
       if (isFollowingUser && !hasDestination) {
         _centerCameraOnUser(bearing: routeBearing);
       }
-
-      if (hasDestination && _routeConfirmed) {
-        _getRouteCoordinates();
-      }
+      if (hasDestination && _routeConfirmed) _getRouteCoordinates();
       if (isNavigationActive && routeCoordinates.isNotEmpty) {
         _updateUpcomingRoute();
         _activeCameraOnUser(
@@ -790,41 +1272,41 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
     if (isFollowingUser && userPosition != null) {
       _centerCameraOnUser(bearing: userBearing);
     } else {
-      mapboxMap?.flyTo(
-        mp.CameraOptions(pitch: newPitch),
-        mp.MapAnimationOptions(duration: 700, startDelay: 0),
-      );
+      mapboxMap?.flyTo(mp.CameraOptions(pitch: newPitch),
+          mp.MapAnimationOptions(duration: 700, startDelay: 0));
     }
   }
 
   Future<Uint8List> _loadHQMarkerImage() async {
-    final ByteData byteData =
-        await rootBundle.load('assets/icons/pin-point.png');
-    return byteData.buffer.asUint8List();
+    final ByteData data =
+        await rootBundle.load('assets/icons/location_puck.png');
+    final Uint8List bytes = data.buffer.asUint8List();
+    final codec = await ui.instantiateImageCodec(bytes,
+        targetWidth: 105, targetHeight: 105);
+    final frame = await codec.getNextFrame();
+    final image = frame.image;
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
   }
 
   Future<void> _changeLocationPuckToNavigation() async {
-    final ByteData navData =
-        await rootBundle.load('assets/icons/navigation.png');
-    final Uint8List navImage = navData.buffer.asUint8List();
     await mapboxMap?.location.updateSettings(
       mp.LocationComponentSettings(
-        enabled: true,
+        showAccuracyRing: true,
+        accuracyRingColor: const int.fromEnvironment('0xFF005EFF'),
+        accuracyRingBorderColor: const int.fromEnvironment('0xFF008CFF'),
         pulsingEnabled: true,
-        pulsingColor: Colors.red.value,
-        locationPuck: mp.LocationPuck(
-          locationPuck2D: mp.DefaultLocationPuck2D(
-            topImage: navImage,
-            shadowImage: Uint8List(0),
-          ),
-        ),
+        pulsingColor: Colors.blueAccent.value,
+        pulsingMaxRadius: 80,
+        puckBearingEnabled: true,
+        puckBearing: mp.PuckBearing.HEADING,
       ),
     );
   }
 
   Future<void> _reverseGeocode(mp.Position position, bool isStart) async {
-    final url = Uri.parse('https://api.mapbox.com/geocoding/v5/mapbox.places/'
-        '${position.lng},${position.lat}.json?access_token=${dotenv.env["MAPBOX_ACCESS_TOKEN"]!}');
+    final url = Uri.parse(
+        'https://api.mapbox.com/geocoding/v5/mapbox.places/${position.lng},${position.lat}.json?access_token=${dotenv.env["MAPBOX_ACCESS_TOKEN"]!}');
     try {
       final response = await http.get(url);
       if (response.statusCode == 200) {
@@ -837,81 +1319,87 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
               startLocationName = name;
             } else {
               endLocationName = name;
+              for (var feature in features) {
+                final context = feature['context'] as List<dynamic>?;
+                if (context != null) {
+                  for (var item in context) {
+                    if (item['id'].toString().contains('region')) {
+                      destinationRegionName = item['text'];
+                    }
+                    if (item['id'].toString().contains('place') ||
+                        item['id'].toString().contains('locality')) {
+                      destinationRoadName = feature['text'];
+                    }
+                  }
+                }
+              }
+              destinationRoadName ??= features[0]['text'];
             }
           });
         }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('Geocoding error: $e');
-      }
+      if (kDebugMode) print('Geocoding error: $e');
     }
   }
 
   Widget _buildNavigationInfoPanel() {
+    const gradient = LinearGradient(
+        colors: [Colors.black, Colors.transparent],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter);
     return Positioned(
-      top: 90,
-      left: 20,
-      right: 20,
+      top: 0,
+      left: 0,
+      right: 0,
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding:
+            const EdgeInsets.only(top: 46, left: 20, right: 20, bottom: 10),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: const [
-            BoxShadow(color: Colors.black12, blurRadius: 10),
-          ],
-        ),
+            gradient: gradient,
+            borderRadius: BorderRadius.circular(0),
+            boxShadow: const [
+              BoxShadow(color: Colors.black12, blurRadius: 10)
+            ]),
         child: Stack(
           children: [
             Positioned(
               top: 0,
               right: 0,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.red),
-                onPressed: _exitNavigationMode,
-              ),
+              child: CircleAvatar(
+                  backgroundColor: Colors.white,
+                  child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.red),
+                      onPressed: _exitNavigationMode)),
             ),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Navigation Mode',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                if (routeDistance != null && routeDuration != null)
-                  Text(
-                    'Distance: ${(routeDistance! / 1000).toStringAsFixed(1)} km, '
-                    'Duration: ${(routeDuration! / 60).toStringAsFixed(0)} mins',
-                    style: const TextStyle(fontSize: 14),
+                if (routeDistance != null)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text((routeDistance! / 1000).toStringAsFixed(1),
+                          style: const TextStyle(
+                              fontSize: 38,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              fontFamily: 'Gilroy')),
+                      const Text(' km/h',
+                          style: TextStyle(
+                              fontSize: 26,
+                              color: Colors.white,
+                              fontFamily: 'Gilroy')),
+                    ],
                   ),
                 const SizedBox(height: 8),
-                if (startLocationName.isNotEmpty)
+                if (routeDuration != null)
                   Text(
-                    'From: $startLocationName',
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                if (endLocationName.isNotEmpty)
-                  Text(
-                    'To: $endLocationName',
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: routeProfiles.entries.map((entry) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                      child: IconButton(
-                        icon: Icon(entry.value),
-                        color: selectedProfile == entry.key
-                            ? routeColors[entry.key]
-                            : Colors.grey,
-                        onPressed: () => _updateRouteProfile(entry.key),
-                      ),
-                    );
-                  }).toList(),
-                ),
+                      'Duration: ${(routeDuration! / 60).toStringAsFixed(0)} mins',
+                      style: const TextStyle(
+                          fontSize: 18,
+                          color: Colors.white,
+                          fontFamily: 'Gilroy')),
               ],
             ),
           ],
@@ -932,9 +1420,8 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
       _showBubble = false;
     });
     _activeCameraOnUser(
-      bearing: _calculateRouteBearing(userPosition ?? mp.Position(0, 0)),
-      useBottomCenter: true,
-    );
+        bearing: _calculateRouteBearing(userPosition ?? mp.Position(0, 0)),
+        useBottomCenter: true);
   }
 
   void _exitNavigationMode() {
@@ -954,14 +1441,10 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
       _isNavigationPuckActive = false;
       _updateRoutePolyline();
     });
-    mapboxMap?.location.updateSettings(
-      mp.LocationComponentSettings(
+    mapboxMap?.location.updateSettings(mp.LocationComponentSettings(
         pulsingColor: Colors.red.value,
-        locationPuck: mp.LocationPuck(
-          locationPuck2D: mp.DefaultLocationPuck2D(),
-        ),
-      ),
-    );
+        locationPuck:
+            mp.LocationPuck(locationPuck2D: mp.DefaultLocationPuck2D())));
   }
 
   void _cancelRoute() {
@@ -982,34 +1465,43 @@ class _FullMapState extends State<FullMap> with TickerProviderStateMixin {
         _updateRoutePolyline();
       });
     });
-    mapboxMap?.location.updateSettings(
-      mp.LocationComponentSettings(
+    mapboxMap?.location.updateSettings(mp.LocationComponentSettings(
         pulsingColor: Colors.red.value,
-        locationPuck: mp.LocationPuck(
-          locationPuck2D: mp.DefaultLocationPuck2D(),
-        ),
-      ),
-    );
+        locationPuck:
+            mp.LocationPuck(locationPuck2D: mp.DefaultLocationPuck2D())));
   }
 
   void _zoomIn() async {
     final currentZoom = (await mapboxMap?.getCameraState())?.zoom ?? 0;
-    mapboxMap?.flyTo(
-      mp.CameraOptions(zoom: currentZoom + 1),
-      mp.MapAnimationOptions(duration: 500, startDelay: 0),
-    );
+    const maxZoom = 16.0;
+    if (currentZoom < maxZoom) {
+      mapboxMap?.flyTo(
+        mp.CameraOptions(
+          zoom: (currentZoom + 1)
+              .clamp(10.0, maxZoom)
+              .toDouble(), // Convert to double
+        ),
+        mp.MapAnimationOptions(duration: 500, startDelay: 0),
+      );
+    }
   }
 
   Future<void> _zoomOut() async {
-    mapboxMap?.flyTo(
-      mp.CameraOptions(
-          zoom: ((await mapboxMap?.getCameraState())?.zoom ?? 0) - 1),
-      mp.MapAnimationOptions(duration: 500, startDelay: 0),
-    );
+    final currentZoom = (await mapboxMap?.getCameraState())?.zoom ?? 0;
+    const minZoom = 10.0;
+    if (currentZoom > minZoom) {
+      mapboxMap?.flyTo(
+        mp.CameraOptions(
+          zoom: (currentZoom - 1)
+              .clamp(minZoom, 16.0)
+              .toDouble(), // Convert to double
+        ),
+        mp.MapAnimationOptions(duration: 500, startDelay: 0),
+      );
+    }
   }
 }
 
-// Modified BubbleTailPainter to ensure a full circle with a connecting tail
 class BubbleTailPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -1017,19 +1509,22 @@ class BubbleTailPainter extends CustomPainter {
       ..color = Colors.white
       ..style = PaintingStyle.fill;
 
-    // Draw a full circle
-    final circleRadius = size.width / 2;
-    final circleCenter = Offset(size.width / 2, circleRadius);
-    canvas.drawCircle(circleCenter, circleRadius, paint);
+    final path = Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width, 0)
+      ..lineTo(size.width / 2, size.height)
+      ..close();
 
-    //   // Draw the connecting tail
-    //   final path = Path()
-    //     ..moveTo(size.width / 2, circleRadius) // Start at bottom of circle
-    //     ..lineTo(size.width / 2 - 5, 0) // Top left of tail (connecting to bubble)
-    //     ..lineTo(size.width / 2 + 5, 0) // Top right of tail (connecting to bubble)
-    //     ..close();
+    // Draw shadow
+    canvas.drawShadow(
+      path,
+      Colors.black.withOpacity(0.8),
+      10.0,
+      true,
+    );
 
-    //   canvas.drawPath(path, paint);
+    // Draw the filled path (the tail itself)
+    canvas.drawPath(path, paint);
   }
 
   @override

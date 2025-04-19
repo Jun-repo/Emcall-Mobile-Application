@@ -4,7 +4,8 @@
 import 'dart:io';
 import 'package:bcrypt/bcrypt.dart';
 import 'package:emcall/containers/residents/complete_resident_account_form.dart';
-import 'package:emcall/containers/residents/pages/resident_home_page.dart';
+import 'package:emcall/containers/residents/pages/home_navigation_page.dart';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -231,11 +232,8 @@ class _CreateResidentAccountFormState extends State<CreateResidentAccountForm> {
                       Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => ResidentHomePage(
-                            firstName: firstNameController.text,
-                            middleName: middleNameController.text,
-                            lastName: lastNameController.text,
-                            suffix: selectedSuffix ?? '',
+                          builder: (context) => const HomeNavigationPage(
+                            initialIndex: 1,
                           ),
                         ),
                       );
